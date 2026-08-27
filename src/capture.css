@@ -1,0 +1,29 @@
+﻿:root {
+  color-scheme: dark;
+  font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%; margin: 0; overflow: hidden;
+  cursor: crosshair; user-select: none;
+}
+#screenImage, #selectionCanvas {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+}
+#screenImage { object-fit: fill; pointer-events: none; }
+#selectionCanvas { touch-action: none; }
+.hint {
+  position: fixed; top: 22px; left: 50%; display: flex; gap: 10px;
+  align-items: center; transform: translateX(-50%); padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 999px;
+  color: #eaf0ff; background: rgba(15, 20, 31, 0.82);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.34); backdrop-filter: blur(16px);
+  pointer-events: none;
+}
+.hint strong { font-size: 13px; }
+.hint span { color: #9aa6bd; font-size: 12px; }
+.size-badge {
+  position: fixed; z-index: 3; padding: 5px 8px; border-radius: 7px;
+  color: white; background: #4c6fff; box-shadow: 0 8px 24px rgba(76, 111, 255, 0.35);
+  font-size: 12px; pointer-events: none;
+}

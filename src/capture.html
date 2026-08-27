@@ -1,0 +1,17 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>选择翻译区域</title>
+    <link rel="stylesheet" href="capture.css" />
+  </head>
+  <body>
+    <img id="screenImage" alt="当前屏幕" />
+    <canvas id="selectionCanvas"></canvas>
+    <div class="hint"><strong>拖动框选</strong><span>Esc 取消 · 松开后立即识别</span></div>
+    <div id="sizeBadge" class="size-badge" hidden></div>
+    <script src="capture.js"></script>
+  </body>
+</html>

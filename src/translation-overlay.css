@@ -1,0 +1,29 @@
+:root { color-scheme: dark; font-family: "Segoe UI Variable", "Microsoft YaHei UI", sans-serif; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+.overlay-stage { position: relative; width: 100%; height: 100%; overflow: hidden; border: 1px solid rgba(135, 160, 255, 0.46); background: rgba(6, 9, 15, 0.035); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025); }
+.overlay-blocks { position: absolute; inset: 0; pointer-events: none; }
+.translation-block {
+  position: absolute; display: flex; align-items: center; padding: 2px 5px; overflow: visible;
+  border: 1px solid rgba(144, 168, 255, 0.26); border-radius: 5px;
+  color: #f8faff; background: rgba(8, 12, 20, 0.91); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.34);
+  line-height: 1.25; white-space: pre-wrap; overflow-wrap: anywhere; text-shadow: 0 1px 2px #000;
+}
+.overlay-fallback {
+  position: absolute; inset: 0; padding: 34px 14px 14px; overflow: auto;
+  color: #f8faff; background: rgba(10, 14, 23, 0.9); white-space: pre-wrap;
+  font-size: clamp(13px, 2.2vw, 19px); line-height: 1.6; backdrop-filter: blur(15px);
+}
+.overlay-toolbar {
+  position: absolute; z-index: 2; top: 5px; right: 5px; display: flex; align-items: center; gap: 7px;
+  height: 25px; padding-left: 8px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px; color: #aebcff; background: rgba(8, 12, 20, 0.9); box-shadow: 0 5px 18px rgba(0, 0, 0, 0.3);
+  font-size: 9px; letter-spacing: 0.7px;
+}
+.overlay-toolbar button { width: 27px; height: 25px; border: 0; color: #bdc6d7; background: transparent; cursor: pointer; font-size: 16px; }
+.overlay-toolbar button:hover { color: white; background: rgba(255, 255, 255, 0.1); }
+.live-badge { display: inline-flex; align-items: center; gap: 4px; color: #73e6a6; font-weight: 700; letter-spacing: 0; }
+.live-badge[hidden] { display: none; }
+.live-badge span { width: 6px; height: 6px; border-radius: 50%; background: #5fe09a; box-shadow: 0 0 0 3px rgba(95, 224, 154, 0.13); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: 0.42; transform: scale(0.82); } }
+.overlay-stage.status .overlay-fallback { inset: 50% auto auto 50%; width: max-content; max-width: min(82vw, 620px); transform: translate(-50%, -50%); padding: 12px 18px; border: 1px solid rgba(144, 168, 255, 0.34); border-radius: 10px; background: rgba(8, 12, 20, 0.84); box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35); font-size: 15px; line-height: 1.45; text-align: center; backdrop-filter: blur(15px); }

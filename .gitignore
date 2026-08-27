@@ -1,0 +1,15 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 运行时数据 / 测试缓存
+temp-test-data/
+
+# 日志
+*.log
+
+# 系统文件
+Thumbs.db
+.DS_Store

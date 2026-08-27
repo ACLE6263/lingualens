@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>翻译覆盖层</title>
+    <link rel="stylesheet" href="translation-overlay.css" />
+  </head>
+  <body>
+    <main id="overlayStage" class="overlay-stage">
+      <div id="overlayBlocks" class="overlay-blocks"></div>
+      <div id="overlayFallback" class="overlay-fallback">正在加载译文…</div>
+      <div class="overlay-toolbar">
+        <span id="liveBadge" class="live-badge" hidden><span></span>实时</span>
+        <strong>LinguaLens</strong>
+        <button id="closeOverlayButton" title="关闭覆盖层">×</button>
+      </div>
+    </main>
+    <script src="translation-overlay.js"></script>
+  </body>
+</html>
