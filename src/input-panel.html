@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinguaLens 输入翻译</title>
+    <link rel="stylesheet" href="input-panel.css" />
+  </head>
+  <body>
+    <header class="titlebar">
+      <div class="brand"><span class="brand-mark"></span><span id="panelTitle">输入翻译 · 中 → 英</span></div>
+      <div class="window-actions">
+        <button id="closeButton" class="icon-button danger" title="关闭（Esc）">×</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="text-card">
+        <div class="card-heading"><span>中文输入</span><span class="confidence">Enter 立即翻译</span></div>
+        <textarea id="sourceInput" placeholder="输入中文，自动翻译…" spellcheck="false"></textarea>
+      </section>
+
+      <section class="text-card translated-card">
+        <div class="card-heading">
+          <span>翻译结果</span>
+          <span class="heading-right">
+            <select id="targetLanguageSelect" class="lang-select" title="翻译成什么语言">
+              <option value="en">英语</option><option value="zh-CN">简体中文</option><option value="ja">日语</option>
+              <option value="ko">韩语</option><option value="fr">法语</option><option value="de">德语</option>
+              <option value="es">西班牙语</option><option value="ru">俄语</option>
+            </select>
+            <span id="providerText" class="confidence"></span>
+          </span>
+        </div>
+        <div id="resultText" class="translated-text empty">等待输入…</div>
+      </section>
+
+      <div class="action-bar">
+        <span id="statusText" class="meta-text">输入后自动翻译</span>
+        <button id="copyButton" class="secondary-button" disabled>复制译文</button>
+      </div>
+    </main>
+    <script src="input-panel.js"></script>
+  </body>
+</html>

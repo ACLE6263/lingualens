@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { execSync } = require('node:child_process');
 
 const {
   app,
@@ -16,6 +17,7 @@ const {
 } = require('electron');
 
 const { createFrameSignature } = require('./lib/frame-signature');
+const { preprocessBgraBitmap } = require('./lib/image-preprocess');
 const { LiveTranslationSession } = require('./lib/live-translation-session');
 const { OcrService } = require('./lib/ocr-service');
 const { SettingsStore } = require('./lib/settings-store');
@@ -23,6 +25,7 @@ const { translateBlocks, translateText } = require('./lib/translation-service');
 const { createTrayIconBuffer } = require('./lib/tray-icon');
 
 const DEFAULT_WINDOW_SIZE = { width: 560, height: 700 };
+const INPUT_PANEL_SIZE = { width: 460, height: 324 };
 const MAX_OCR_PIXELS = 8_000_000;
 const HIDDEN_STARTUP_FLAG = '--hidden-startup';
 const startHidden = process.argv.includes(HIDDEN_STARTUP_FLAG);
@@ -32,16 +35,16 @@ let captureWindowLoadPromise = null;
 let captureStarting = false;
 let fullScreenTranslationStarting = false;
 let resultWindow = null;
-let screenTranslationWindow = null;
 let translationOverlayWindow = null;
-let screenTranslationOverlayWindow = null;
+let inputPanelWindow = null;
 let tray = null;
 let settingsStore = null;
 let ocrService = null;
 let liveTranslationSession = null;
 let isQuitting = false;
-let activeCaptureHotkey = null;
-let activeScreenTranslationHotkey = null;
+let activeHotkey = null;
+let activeInputHotkey = null;
+let activeFullScreenHotkey = null;
 let liveSkippedFrames = 0;
 let currentSelectionSignature = null;
 let currentSession = {
@@ -50,13 +53,6 @@ let currentSession = {
   liveRunning: false,
   liveStatus: 'idle',
   liveSkippedFrames: 0,
-  translatedBlocks: [],
-};
-let currentScreenTranslationSession = {
-  phase: 'ready',
-  message: '按屏幕翻译快捷键开始翻译当前显示器。',
-  liveRunning: false,
-  liveStatus: 'idle',
   translatedBlocks: [],
 };
 
@@ -104,35 +100,6 @@ function createResultWindow() {
   resultWindow.on('closed', () => { resultWindow = null; });
   resultWindow.webContents.on('did-finish-load', () => sendResultState(currentSession));
   return resultWindow;
-}
-
-function createScreenTranslationWindow() {
-  if (screenTranslationWindow && !screenTranslationWindow.isDestroyed()) return screenTranslationWindow;
-
-  screenTranslationWindow = new BrowserWindow(windowOptions({
-    width: 620,
-    height: 720,
-    minWidth: 470,
-    minHeight: 560,
-    title: 'LinguaLens - Screen Translation',
-    resizable: true,
-    maximizable: false,
-    skipTaskbar: true,
-  }));
-  hardenWindow(screenTranslationWindow);
-  screenTranslationWindow.setContentProtection(true);
-  screenTranslationWindow.loadFile(path.join(__dirname, 'src', 'result.html'), { hash: 'screen' });
-  screenTranslationWindow.on('close', (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      screenTranslationWindow.hide();
-    }
-  });
-  screenTranslationWindow.on('closed', () => { screenTranslationWindow = null; });
-  screenTranslationWindow.webContents.on('did-finish-load', () => {
-    sendScreenTranslationState(currentScreenTranslationSession);
-  });
-  return screenTranslationWindow;
 }
 
 function ensureCaptureWindow(display) {
@@ -210,39 +177,10 @@ function sendResultState(state) {
   }
 }
 
-function sendScreenTranslationState(state) {
-  currentScreenTranslationSession = { ...currentScreenTranslationSession, ...state };
-  if (screenTranslationWindow && !screenTranslationWindow.isDestroyed()
-    && !screenTranslationWindow.webContents.isLoading()) {
-    screenTranslationWindow.webContents.send('screen-translation:state', currentScreenTranslationSession);
-  }
-}
-
-function showScreenTranslationWindow({ focus = true } = {}) {
-  const window = createScreenTranslationWindow();
-  if (focus) {
-    window.show();
-    window.focus();
-  } else {
-    window.showInactive();
-  }
-  return window;
-}
-
 function closeTranslationOverlay() {
   if (translationOverlayWindow && !translationOverlayWindow.isDestroyed()) {
     translationOverlayWindow.destroy();
   }
-}
-
-function closeScreenTranslationOverlay() {
-  if (screenTranslationOverlayWindow && !screenTranslationOverlayWindow.isDestroyed()) {
-    screenTranslationOverlayWindow.destroy();
-  }
-}
-
-function isWindowVisible(window) {
-  return Boolean(window && !window.isDestroyed() && window.isVisible());
 }
 
 function getBoundsCenter(bounds) {
@@ -286,15 +224,35 @@ function calculateOcrScale(imageSize) {
   return Math.max(1, Math.min(desiredScale, pixelLimitedScale));
 }
 
+function preprocessImageForOcr(image) {
+  const size = image.getSize();
+  const result = preprocessBgraBitmap(image.toBitmap(), size.width, size.height, {
+    mode: 'adaptive-gray',
+    passthroughOnLuminance: true,
+  });
+  if (!result) return null;
+  const processed = nativeImage.createFromBitmap(result.bitmap, {
+    width: size.width,
+    height: size.height,
+  });
+  if (processed.isEmpty()) return null;
+  return processed.toDataURL();
+}
+
 function prepareImageForOcr(image) {
   const imageSize = image.getSize();
   const scale = calculateOcrScale(imageSize);
-  if (scale < 1.05) return image.toDataURL();
-  return image.resize({
+  const scaled = scale < 1.05 ? image : image.resize({
     width: Math.max(1, Math.round(imageSize.width * scale)),
     height: Math.max(1, Math.round(imageSize.height * scale)),
     quality: 'best',
-  }).toDataURL();
+  });
+  try {
+    const preprocessed = preprocessImageForOcr(scaled);
+    if (preprocessed) return preprocessed;
+  } catch {
+  }
+  return scaled.toDataURL();
 }
 
 async function captureRegion(bounds) {
@@ -328,6 +286,7 @@ function stopLiveTranslation() {
 }
 
 async function startCapture() {
+  if (fullScreenTranslationStarting) return;
   if (captureWindow && !captureWindow.isDestroyed() && captureWindow.isVisible()) {
     captureWindow.focus();
     return;
@@ -426,66 +385,39 @@ async function recognizeAndTranslate(imageDataUrl, settings, { onProgress, onTra
 }
 
 async function startFullScreenTranslation() {
-  if (fullScreenTranslationStarting) {
-    showScreenTranslationWindow();
-    return;
-  }
+  if (fullScreenTranslationStarting || captureStarting) return;
 
   fullScreenTranslationStarting = true;
   let displayBounds = null;
-  let captureWindowWasVisible = false;
-  let captureOverlayWasVisible = false;
   try {
-    const screenWindow = createScreenTranslationWindow();
-    screenWindow.hide();
-    closeScreenTranslationOverlay();
-
+    hideCaptureWindow();
+    stopLiveTranslation();
+    closeTranslationOverlay();
     const cursor = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(cursor);
     displayBounds = { ...display.bounds };
-    captureWindowWasVisible = isWindowVisible(captureWindow);
-    captureOverlayWasVisible = isWindowVisible(translationOverlayWindow);
-    if (captureWindowWasVisible) captureWindow.hide();
-    if (captureOverlayWasVisible) translationOverlayWindow.hide();
-
-    sendScreenTranslationState({
-      phase: 'capture',
-      message: '正在读取屏幕图像…',
+    sendResultState({
+      phase: 'ocr',
+      message: '正在进行全屏翻译…',
       selectionBounds: displayBounds,
-      progress: 0.12,
+      progress: 0,
       sourceText: '',
       translatedText: '',
       translatedBlocks: [],
+      liveRunning: false,
+      liveStatus: 'idle',
       error: null,
     });
 
     const screenshot = await captureDisplay(display);
-    const imageDataUrl = createCapturePreviewDataUrl(screenshot);
-    if (captureWindowWasVisible && !isWindowVisible(captureWindow)) {
-      captureWindow.show();
-      captureWindow.focus();
-    }
-    if (captureOverlayWasVisible && !isWindowVisible(translationOverlayWindow)) {
-      translationOverlayWindow.showInactive();
-    }
-
-    sendScreenTranslationState({
-      phase: 'ocr',
-      message: '正在识别屏幕文字…',
-      imageDataUrl,
-      selectionBounds: displayBounds,
-      progress: 0.2,
-    });
-    showScreenTranslationWindow({ focus: !captureWindowWasVisible });
-    showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
-
     const settings = settingsStore.getRuntimeSettings();
+    showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
     const result = await recognizeAndTranslate(
       prepareImageForOcr(screenshot),
       settings,
       {
         onProgress: (progress) => {
-          sendScreenTranslationState({
+          sendResultState({
             phase: 'ocr',
             message: progress.label,
             progress: progress.value,
@@ -493,7 +425,7 @@ async function startFullScreenTranslation() {
           showFullScreenStatus(displayBounds, progress.label);
         },
         onTranslate: (ocrResult) => {
-          sendScreenTranslationState({
+          sendResultState({
             phase: 'translate',
             message: '正在翻译 ' + (ocrResult.lines.length || 1) + ' 个文本块…',
             sourceText: ocrResult.text.trim(),
@@ -505,10 +437,15 @@ async function startFullScreenTranslation() {
         },
       },
     );
+    const imageDataUrl = createCapturePreviewDataUrl(screenshot);
+    currentSelectionSignature = createImageSignature(screenshot);
+    liveSkippedFrames = 0;
 
-    sendScreenTranslationState({
+    sendResultState({
       phase: result.sourceText ? 'complete' : 'empty',
       message: result.sourceText ? '全屏翻译完成' : '未识别到屏幕文字',
+      imageDataUrl,
+      selectionBounds: displayBounds,
       progress: 1,
       sourceText: result.sourceText,
       translatedText: result.translatedText,
@@ -517,11 +454,13 @@ async function startFullScreenTranslation() {
       provider: result.provider,
       confidence: result.ocrResult.confidence,
       ocrLineCount: result.ocrResult.lines.length,
+      liveRunning: false,
+      liveStatus: 'idle',
       error: null,
     });
 
     if (result.sourceText) {
-      showScreenTranslationOverlay(displayBounds, {
+      showTranslationOverlay(displayBounds, {
         text: result.translatedText,
         blocks: result.translatedBlocks,
         liveRunning: false,
@@ -531,21 +470,14 @@ async function startFullScreenTranslation() {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendScreenTranslationState({
+    sendResultState({
       phase: 'error',
       message: '全屏翻译失败',
       error: message,
     });
-    showScreenTranslationWindow({ focus: !captureWindowWasVisible });
     if (displayBounds) showFullScreenStatus(displayBounds, '全屏翻译失败：' + message);
+    else showFatalError(error);
   } finally {
-    if (captureWindowWasVisible && !isWindowVisible(captureWindow)) {
-      captureWindow.show();
-      captureWindow.focus();
-    }
-    if (captureOverlayWasVisible && !isWindowVisible(translationOverlayWindow)) {
-      translationOverlayWindow.showInactive();
-    }
     fullScreenTranslationStarting = false;
   }
 }
@@ -673,16 +605,6 @@ function getOverlayPayload() {
   };
 }
 
-function getScreenTranslationOverlayPayload() {
-  return {
-    text: currentScreenTranslationSession.translatedText ?? '',
-    blocks: Array.isArray(currentScreenTranslationSession.translatedBlocks)
-      ? currentScreenTranslationSession.translatedBlocks
-      : [],
-    liveRunning: false,
-  };
-}
-
 function updateTranslationOverlay() {
   if (translationOverlayWindow && !translationOverlayWindow.isDestroyed()
     && !translationOverlayWindow.webContents.isLoading()) {
@@ -690,18 +612,8 @@ function updateTranslationOverlay() {
   }
 }
 
-function updateScreenTranslationOverlay() {
-  if (screenTranslationOverlayWindow && !screenTranslationOverlayWindow.isDestroyed()
-    && !screenTranslationOverlayWindow.webContents.isLoading()) {
-    screenTranslationOverlayWindow.webContents.send(
-      'screen-overlay:update',
-      getScreenTranslationOverlayPayload(),
-    );
-  }
-}
-
 function showFullScreenStatus(bounds, message) {
-  showScreenTranslationOverlay(bounds, {
+  showTranslationOverlay(bounds, {
     text: '',
     blocks: [],
     liveRunning: false,
@@ -709,17 +621,65 @@ function showFullScreenStatus(bounds, message) {
   });
 }
 
-function showOverlayWindow({
-  bounds,
-  payload,
-  hash = '',
-  getWindow,
-  setWindow,
-  initChannel,
-  updateChannel,
-}) {
-  const blocks = Array.isArray(payload.blocks) ? payload.blocks : [];
-  if (!bounds || (!payload.text && blocks.length === 0 && !payload.status)) return;
+function createInputPanelWindow() {
+  if (inputPanelWindow && !inputPanelWindow.isDestroyed()) return inputPanelWindow;
+
+  inputPanelWindow = new BrowserWindow(windowOptions({
+    ...INPUT_PANEL_SIZE,
+    minWidth: 380,
+    minHeight: 250,
+    title: 'LinguaLens 输入翻译',
+    resizable: true,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+  }));
+  hardenWindow(inputPanelWindow);
+  inputPanelWindow.setAlwaysOnTop(true, 'floating');
+  inputPanelWindow.setContentProtection(true);
+  inputPanelWindow.loadFile(path.join(__dirname, 'src', 'input-panel.html'));
+  inputPanelWindow.on('closed', () => { inputPanelWindow = null; });
+  return inputPanelWindow;
+}
+
+function showInputPanel() {
+  const panel = createInputPanelWindow();
+  if (panel.isVisible()) {
+    panel.hide();
+    return;
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const workArea = display.workArea;
+  const x = Math.min(
+    Math.max(workArea.x, cursor.x + 12),
+    workArea.x + workArea.width - INPUT_PANEL_SIZE.width - 8,
+  );
+  const y = Math.min(
+    Math.max(workArea.y, cursor.y + 12),
+    workArea.y + workArea.height - INPUT_PANEL_SIZE.height - 8,
+  );
+  panel.setBounds({ x: Math.round(x), y: Math.round(y), ...INPUT_PANEL_SIZE });
+  if (!panel.webContents.isLoading()) panel.webContents.send('input-panel:shown');
+  panel.show();
+  panel.focus();
+}
+
+function registerInputPanelShortcut(accelerator) {
+  if (activeInputHotkey) globalShortcut.unregister(activeInputHotkey);
+  const registered = globalShortcut.register(accelerator, () => {
+    try {
+      showInputPanel();
+    } catch (error) {
+      showFatalError(error);
+    }
+  });
+  if (registered) activeInputHotkey = accelerator;
+  return registered;
+}
+
+function showTranslationOverlay(bounds = currentSession.selectionBounds, payload = getOverlayPayload()) {
+  if (!bounds || (!payload.text && payload.blocks.length === 0 && !payload.status)) return;
 
   const overlayBounds = {
     x: Math.round(bounds.x),
@@ -727,17 +687,14 @@ function showOverlayWindow({
     width: Math.max(8, Math.round(bounds.width)),
     height: Math.max(8, Math.round(bounds.height)),
   };
-  const currentWindow = getWindow();
-  if (currentWindow && !currentWindow.isDestroyed()) {
-    currentWindow.setBounds(overlayBounds);
-    if (!currentWindow.webContents.isLoading()) {
-      currentWindow.webContents.send(updateChannel, { ...payload, blocks });
-    }
-    currentWindow.showInactive();
-    return currentWindow;
+  if (translationOverlayWindow && !translationOverlayWindow.isDestroyed()) {
+    translationOverlayWindow.setBounds(overlayBounds);
+    translationOverlayWindow.webContents.send('overlay:update', payload);
+    translationOverlayWindow.showInactive();
+    return;
   }
 
-  const overlayWindow = new BrowserWindow(windowOptions({
+  translationOverlayWindow = new BrowserWindow(windowOptions({
     ...overlayBounds,
     transparent: true,
     backgroundColor: '#00000000',
@@ -747,45 +704,15 @@ function showOverlayWindow({
     movable: false,
     hasShadow: false,
   }));
-  setWindow(overlayWindow);
-  hardenWindow(overlayWindow);
-  overlayWindow.setAlwaysOnTop(true, 'floating');
-  overlayWindow.setContentProtection(true);
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  const overlayPath = path.join(__dirname, 'src', 'translation-overlay.html');
-  if (hash) overlayWindow.loadFile(overlayPath, { hash });
-  else overlayWindow.loadFile(overlayPath);
-  overlayWindow.on('closed', () => setWindow(null));
-  overlayWindow.webContents.on('did-finish-load', () => {
-    overlayWindow.webContents.send(initChannel, { ...payload, blocks });
-    overlayWindow.showInactive();
-  });
-  return overlayWindow;
-}
-
-function showTranslationOverlay(bounds = currentSession.selectionBounds, payload = getOverlayPayload()) {
-  return showOverlayWindow({
-    bounds,
-    payload,
-    getWindow: () => translationOverlayWindow,
-    setWindow: (window) => { translationOverlayWindow = window; },
-    initChannel: 'overlay:init',
-    updateChannel: 'overlay:update',
-  });
-}
-
-function showScreenTranslationOverlay(
-  bounds = currentScreenTranslationSession.selectionBounds,
-  payload = getScreenTranslationOverlayPayload(),
-) {
-  return showOverlayWindow({
-    bounds,
-    payload,
-    hash: 'screen',
-    getWindow: () => screenTranslationOverlayWindow,
-    setWindow: (window) => { screenTranslationOverlayWindow = window; },
-    initChannel: 'screen-overlay:init',
-    updateChannel: 'screen-overlay:update',
+  hardenWindow(translationOverlayWindow);
+  translationOverlayWindow.setAlwaysOnTop(true, 'floating');
+  translationOverlayWindow.setContentProtection(true);
+  translationOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  translationOverlayWindow.loadFile(path.join(__dirname, 'src', 'translation-overlay.html'));
+  translationOverlayWindow.on('closed', () => { translationOverlayWindow = null; });
+  translationOverlayWindow.webContents.on('did-finish-load', () => {
+    translationOverlayWindow.webContents.send('overlay:init', payload);
+    translationOverlayWindow.showInactive();
   });
 }
 
@@ -941,70 +868,52 @@ function toggleLiveTranslation() {
   return { running: true };
 }
 
-function getStartupExecutablePath() {
-  const portableExecutable = process.env.PORTABLE_EXECUTABLE_FILE;
-  if (portableExecutable && fs.existsSync(portableExecutable)) return portableExecutable;
-  return process.execPath;
-}
-
 function configureAutoLaunch() {
   if (process.platform !== 'win32' || !app.isPackaged) return;
+  // 只允许 portable 本体注册自启；直接运行解包出来的 exe（调试）不得
+  // 覆盖注册表，否则自启项会指向临时目录，开机后跑的是旧代码。
+  const portableExecutable = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (!portableExecutable || !fs.existsSync(portableExecutable)) return;
   try {
     app.setLoginItemSettings({
       openAtLogin: true,
-      path: getStartupExecutablePath(),
+      path: portableExecutable,
       args: [HIDDEN_STARTUP_FLAG],
     });
-  } catch {
-  }
-}
-function normalizeHotkey(value) {
-  return String(value ?? '').trim();
-}
-
-function unregisterActiveHotkeys() {
-  for (const accelerator of [activeCaptureHotkey, activeScreenTranslationHotkey]) {
-    if (!accelerator) continue;
-    try {
-      globalShortcut.unregister(accelerator);
-    } catch {
-    }
-  }
-  activeCaptureHotkey = null;
-  activeScreenTranslationHotkey = null;
-}
-
-function registerHotkeys(captureHotkey, screenTranslationHotkey) {
-  const captureAccelerator = normalizeHotkey(captureHotkey);
-  const screenAccelerator = normalizeHotkey(screenTranslationHotkey);
-  if (!captureAccelerator || !screenAccelerator
-    || captureAccelerator.toLowerCase() === screenAccelerator.toLowerCase()) return false;
-
-  unregisterActiveHotkeys();
-  const registeredAccelerators = [];
-  try {
-    if (!globalShortcut.register(captureAccelerator, () => {
-      startCapture().catch(showFatalError);
-    })) throw new Error('capture hotkey registration failed');
-    registeredAccelerators.push(captureAccelerator);
-
-    if (!globalShortcut.register(screenAccelerator, () => {
-      startFullScreenTranslation().catch(showFatalError);
-    })) throw new Error('screen translation hotkey registration failed');
-    registeredAccelerators.push(screenAccelerator);
-
-    activeCaptureHotkey = captureAccelerator;
-    activeScreenTranslationHotkey = screenAccelerator;
-    return true;
-  } catch {
-    for (const accelerator of registeredAccelerators) {
+    // 收敛自启项：保留指向当前 portable 的那一个，删除历史遗留的
+    // 别名键（曾指向 Temp 解包目录或旧路径，会造成开机双启动）。
+    const runKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+    const output = execSync(`reg query "${runKey}"`, { encoding: 'utf8' });
+    for (const line of output.split(/\r?\n/)) {
+      const match = line.match(/^\s+(.+?)\s+REG_SZ\s+(.+)$/);
+      if (!match) continue;
+      const [, entryName, entryValue] = match;
+      if (!/lingualens/i.test(entryName) && !/lingualens/i.test(entryValue)) continue;
+      if (entryValue.toLowerCase().includes(portableExecutable.toLowerCase())) continue;
       try {
-        globalShortcut.unregister(accelerator);
+        execSync(`reg delete "${runKey}" /v "${entryName}" /f`, { stdio: 'ignore' });
       } catch {
       }
     }
-    return false;
+  } catch {
   }
+}
+function registerFullScreenTranslationShortcut(accelerator) {
+  if (activeFullScreenHotkey) globalShortcut.unregister(activeFullScreenHotkey);
+  const registered = globalShortcut.register(accelerator, () => {
+    startFullScreenTranslation().catch(showFatalError);
+  });
+  if (registered) activeFullScreenHotkey = accelerator;
+  return registered;
+}
+
+function registerCaptureShortcut(accelerator) {
+  if (activeHotkey) globalShortcut.unregister(activeHotkey);
+  const registered = globalShortcut.register(accelerator, () => {
+    startCapture().catch(showFatalError);
+  });
+  if (registered) activeHotkey = accelerator;
+  return registered;
 }
 
 function showFatalError(error) {
@@ -1017,15 +926,31 @@ function showFatalError(error) {
   });
 }
 
-function refreshTrayMenu() {
-  if (!tray) return;
+function reportHotkeyFailure(actionName, accelerator) {
+  sendResultState({
+    phase: 'error',
+    message: '快捷键注册失败',
+    error: `快捷键 ${accelerator} 已被其他程序占用，${actionName}当前不可用。可在设置中修改。`,
+  });
+  try {
+    tray?.displayBalloon({
+      iconType: 'warning',
+      title: 'LinguaLens 快捷键注册失败',
+      content: `${actionName}的快捷键 ${accelerator} 已被其他程序占用，请到设置中换一个组合。`,
+    });
+  } catch {
+  }
+}
+
+function createTray() {
   const settings = settingsStore.getRuntimeSettings();
+  const icon = nativeImage.createFromBuffer(createTrayIconBuffer()).resize({ width: 20, height: 20 });
+  tray = new Tray(icon);
+  tray.setToolTip('LinguaLens 屏幕翻译');
   tray.setContextMenu(Menu.buildFromTemplate([
-    {
-      label: '屏幕翻译 (' + settings.screenTranslationHotkey + ')',
-      click: () => startFullScreenTranslation().catch(showFatalError),
-    },
-    { label: '截取并翻译 (' + settings.captureHotkey + ')', click: () => startCapture().catch(showFatalError) },
+    { label: `全屏翻译 (${settings.fullScreenHotkey})`, click: () => startFullScreenTranslation().catch(showFatalError) },
+    { label: `截取并翻译 (${settings.hotkey})`, click: () => startCapture().catch(showFatalError) },
+    { label: `输入翻译（中 → 英） (${settings.inputHotkey})`, click: () => showInputPanel() },
     { label: '打开 LinguaLens', click: () => createResultWindow().show() },
     { type: 'separator' },
     {
@@ -1036,13 +961,6 @@ function refreshTrayMenu() {
       },
     },
   ]));
-}
-
-function createTray() {
-  const icon = nativeImage.createFromBuffer(createTrayIconBuffer()).resize({ width: 20, height: 20 });
-  tray = new Tray(icon);
-  tray.setToolTip('LinguaLens 屏幕翻译');
-  refreshTrayMenu();
   tray.on('double-click', () => startCapture().catch(showFatalError));
 }
 
@@ -1067,30 +985,44 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('translation:retry', async (_event, sourceText) => retryTranslation(sourceText));
   ipcMain.handle('live:toggle', () => toggleLiveTranslation());
+  ipcMain.handle('input-panel:translate', async (_event, text) => {
+    const normalized = String(text ?? '').trim();
+    if (!normalized) throw new Error('没有可翻译的内容。');
+    const runtime = settingsStore.getRuntimeSettings();
+    const settings = { ...runtime, targetLanguage: runtime.inputPanelTargetLanguage || 'en' };
+    return translateText(normalized, settings);
+  });
+  ipcMain.on('input-panel:hide', () => {
+    if (inputPanelWindow && !inputPanelWindow.isDestroyed()) inputPanelWindow.hide();
+  });
   ipcMain.handle('settings:get', () => settingsStore.getPublicSettings());
   ipcMain.handle('settings:save', (_event, nextSettings) => {
     const previous = settingsStore.getRuntimeSettings();
     const saved = settingsStore.save(nextSettings);
-    if (!registerHotkeys(saved.captureHotkey, saved.screenTranslationHotkey)) {
+    let failure = null;
+    if (!registerCaptureShortcut(saved.hotkey)) {
+      failure = `截取翻译快捷键 ${saved.hotkey} 无法注册，请换一个组合。`;
+    } else if (!registerFullScreenTranslationShortcut(saved.fullScreenHotkey)) {
+      failure = `全屏翻译快捷键 ${saved.fullScreenHotkey} 无法注册，请换一个组合。`;
+    } else if (!registerInputPanelShortcut(saved.inputHotkey)) {
+      failure = `输入翻译快捷键 ${saved.inputHotkey} 无法注册，请换一个组合。`;
+    }
+    if (failure) {
       settingsStore.save(previous);
-      registerHotkeys(previous.captureHotkey, previous.screenTranslationHotkey);
-      const duplicate = saved.captureHotkey.toLowerCase() === saved.screenTranslationHotkey.toLowerCase();
-      const invalidHotkey = duplicate
-        ? '两组快捷键不能相同。'
-        : '快捷键无法注册，可能已被其他程序占用或格式不正确。';
-      return { ok: false, error: invalidHotkey };
+      registerCaptureShortcut(previous.hotkey);
+      registerFullScreenTranslationShortcut(previous.fullScreenHotkey);
+      registerInputPanelShortcut(previous.inputHotkey);
+      return { ok: false, error: failure };
     }
     if (liveTranslationSession?.isRunning()) {
       liveTranslationSession.changeThreshold = saved.frameChangeThreshold;
       liveTranslationSession.setIntervalMs(saved.liveIntervalMs);
     }
-    refreshTrayMenu();
     return { ok: true, settings: settingsStore.getPublicSettings() };
   });
   ipcMain.on('clipboard:write', (_event, text) => clipboard.writeText(String(text ?? '')));
   ipcMain.on('overlay:show', () => showTranslationOverlay());
   ipcMain.on('overlay:close', () => closeTranslationOverlay());
-  ipcMain.on('screen-overlay:close', () => closeScreenTranslationOverlay());
   ipcMain.on('window:set-pinned', (event, pinned) => {
     BrowserWindow.fromWebContents(event.sender)?.setAlwaysOnTop(Boolean(pinned), 'floating');
   });
@@ -1119,12 +1051,14 @@ if (!hasSingleInstanceLock) {
     registerIpcHandlers();
     createTray();
     const settings = settingsStore.getRuntimeSettings();
-    if (!registerHotkeys(settings.captureHotkey, settings.screenTranslationHotkey)) {
-      sendResultState({
-        phase: 'error',
-        message: '快捷键注册失败',
-        error: '截取翻译和屏幕翻译快捷键无法注册，请在设置中修改。',
-      });
+    if (!registerFullScreenTranslationShortcut(settings.fullScreenHotkey)) {
+      reportHotkeyFailure('全屏翻译', settings.fullScreenHotkey);
+    }
+    if (!registerCaptureShortcut(settings.hotkey)) {
+      reportHotkeyFailure('截取翻译', settings.hotkey);
+    }
+    if (!registerInputPanelShortcut(settings.inputHotkey)) {
+      reportHotkeyFailure('输入翻译', settings.inputHotkey);
     }
     const window = createResultWindow();
     const resultReady = new Promise((resolve) => window.once('ready-to-show', resolve));

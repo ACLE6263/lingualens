@@ -2,7 +2,6 @@ const overlayBlocks = document.querySelector('#overlayBlocks');
 const overlayFallback = document.querySelector('#overlayFallback');
 const liveBadge = document.querySelector('#liveBadge');
 const overlayStage = document.querySelector('#overlayStage');
-const screenMode = window.location.hash === '#screen';
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -49,8 +48,7 @@ function render(payload = {}) {
 }
 
 document.querySelector('#closeOverlayButton').addEventListener('click', () => {
-  if (screenMode) window.linguaLens.closeScreenOverlay();
-  else window.linguaLens.closeOverlay();
+  window.linguaLens.closeOverlay();
 });
 window.addEventListener('resize', () => {
   for (const element of overlayBlocks.children) {
@@ -58,10 +56,5 @@ window.addEventListener('resize', () => {
     element.style.fontSize = `${clamp((heightPercent / 100) * window.innerHeight * 0.78, 11, 32)}px`;
   }
 });
-if (screenMode) {
-  window.linguaLens.onScreenOverlayInit(render);
-  window.linguaLens.onScreenOverlayUpdate(render);
-} else {
-  window.linguaLens.onOverlayInit(render);
-  window.linguaLens.onOverlayUpdate(render);
-}
+window.linguaLens.onOverlayInit(render);
+window.linguaLens.onOverlayUpdate(render);

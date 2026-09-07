@@ -5,30 +5,22 @@
   "main": "main.js",
   "author": "Codex",
   "license": "MIT",
-  "scripts": {
-    "start": "electron .",
-    "test": "node --test tests/*.test.js",
-    "check": "node --check main.js && node --check preload.js && node --check lib/frame-signature.js && node --check lib/live-translation-session.js && node --check lib/ocr-layout.js && node --check lib/ocr-service.js && node --check lib/settings-store.js && node --check lib/translation-service.js && node --check lib/tray-icon.js && node --check src/capture.js && node --check src/result.js && node --check src/translation-overlay.js",
-    "dist": "electron-builder --win portable --config.electronDist=node_modules/electron/dist"
-  },
   "dependencies": {
     "tesseract.js": "7.0.0"
   },
+  "allowScripts": {
+    "electron@43.2.0": true
+  },
   "devDependencies": {
     "electron": "43.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "^26.0.12"
   },
   "build": {
-    "appId": "com.codex.lingualens",
+    "appId": "com.lingualens.app",
     "productName": "LinguaLens",
-    "asar": true,
-    "files": [
-      "main.js",
-      "preload.js",
-      "lib/**/*",
-      "src/**/*",
-      "package.json"
-    ],
+    "directories": {
+      "output": "../dist"
+    },
     "win": {
       "target": [
         {
@@ -38,11 +30,10 @@
           ]
         }
       ],
-      "artifactName": "LinguaLens-${version}-portable.${ext}",
-      "icon": "build/icon.png"
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "LinguaLens-0.1.0-portable.exe"
     }
-  },
-  "allowScripts": {
-    "electron@43.2.0": true
   }
 }

@@ -1,13 +1,12 @@
-const screenMode = window.location.hash === '#screen';
-
 const elements = {
   captureButton: document.querySelector('#captureButton'),
   closeButton: document.querySelector('#closeButton'),
   confidenceText: document.querySelector('#confidenceText'),
   copyButton: document.querySelector('#copyButton'),
   errorText: document.querySelector('#errorText'),
-  captureHotkeyInput: document.querySelector('#captureHotkeyInput'),
-  screenTranslationHotkeyInput: document.querySelector('#screenTranslationHotkeyInput'),
+  hotkeyInput: document.querySelector('#hotkeyInput'),
+  fullScreenHotkeyInput: document.querySelector('#fullScreenHotkeyInput'),
+  inputHotkeyInput: document.querySelector('#inputHotkeyInput'),
   liveButton: document.querySelector('#liveButton'),
   liveIntervalInput: document.querySelector('#liveIntervalInput'),
   metaText: document.querySelector('#metaText'),
@@ -35,7 +34,7 @@ const elements = {
   settingsPanel: document.querySelector('#settingsPanel'),
   sourceText: document.querySelector('#sourceText'),
   statusText: document.querySelector('#statusText'),
-  targetLanguageInput: document.querySelector('#targetLanguageInput'),
+  targetLanguageSelect: document.querySelector('#targetLanguageSelect'),
   toast: document.querySelector('#toast'),
   translatedText: document.querySelector('#translatedText'),
 };
@@ -43,17 +42,6 @@ const elements = {
 let currentState = {};
 let pinned = false;
 let settings = null;
-
-if (screenMode) {
-  document.body.classList.add('screen-mode');
-  for (const element of [
-    elements.captureButton,
-    elements.retryButton,
-    elements.overlayButton,
-    elements.liveButton,
-    elements.settingsButton,
-  ]) element.hidden = true;
-}
 
 function toast(message) {
   elements.toast.textContent = message;
@@ -63,20 +51,22 @@ function toast(message) {
 }
 
 function updateMeta(state = currentState) {
-  const captureHotkey = settings?.captureHotkey ?? settings?.hotkey ?? 'Alt+Shift+T';
-  const screenTranslationHotkey = settings?.screenTranslationHotkey ?? 'Shift+Alt+G';
-  if (screenMode) {
-    elements.metaText.textContent = screenTranslationHotkey;
-  } else if (state.liveRunning) {
-    elements.metaText.textContent = `${captureHotkey} · 实时 · 跳过 ${state.liveSkippedFrames ?? 0}`;
+  const hotkey = settings?.hotkey ?? 'Alt+Shift+T';
+  if (state.liveRunning) {
+    elements.metaText.textContent = `${hotkey} · 实时 · 跳过 ${state.liveSkippedFrames ?? 0}`;
   } else {
-    elements.metaText.textContent = captureHotkey;
+    elements.metaText.textContent = hotkey;
   }
 }
 
 function render(state) {
   currentState = state;
   elements.statusText.textContent = state.message ?? '等待截取';
+  // 翻译流程进行中时自动收起设置面板，避免面板盖住结果或误以为弹出设置。
+  if (['capture', 'selecting', 'ocr', 'translate'].includes(state.phase)
+    && elements.settingsPanel.classList.contains('open')) {
+    closeSettings();
+  }
   elements.progressBar.style.width = `${Math.max(0, Math.min(1, state.progress ?? 0)) * 100}%`;
   elements.errorText.hidden = !state.error;
   elements.errorText.textContent = state.error ?? '';
@@ -135,9 +125,9 @@ function setProviderFields(provider) {
 
 async function openSettings() {
   settings = await window.linguaLens.getSettings();
-  elements.captureHotkeyInput.value = settings.captureHotkey ?? settings.hotkey;
-  elements.screenTranslationHotkeyInput.value = settings.screenTranslationHotkey;
-  elements.targetLanguageInput.value = settings.targetLanguage;
+  elements.hotkeyInput.value = settings.hotkey;
+  elements.fullScreenHotkeyInput.value = settings.fullScreenHotkey ?? 'Shift+Alt+G';
+  elements.inputHotkeyInput.value = settings.inputHotkey ?? 'Shift+Alt+R';
   elements.ocrLanguagesInput.value = settings.ocrLanguages;
   elements.liveIntervalInput.value = String(settings.liveIntervalMs);
   elements.openaiBaseUrlInput.value = settings.openai.baseUrl;
@@ -149,6 +139,7 @@ async function openSettings() {
   const selectedProvider = document.querySelector(`input[name="provider"][value="${settings.translationProvider}"]`);
   if (selectedProvider) selectedProvider.checked = true;
   setProviderFields(settings.translationProvider);
+  elements.targetLanguageSelect.value = settings.targetLanguage;
   elements.settingsError.hidden = true;
   elements.settingsPanel.classList.add('open');
   elements.settingsPanel.setAttribute('aria-hidden', 'false');
@@ -210,9 +201,9 @@ elements.settingsForm.addEventListener('submit', async (event) => {
   const provider = document.querySelector('input[name="provider"]:checked').value;
   try {
     const result = await window.linguaLens.saveSettings({
-      captureHotkey: elements.captureHotkeyInput.value,
-      screenTranslationHotkey: elements.screenTranslationHotkeyInput.value,
-      targetLanguage: elements.targetLanguageInput.value,
+      hotkey: elements.hotkeyInput.value,
+      fullScreenHotkey: elements.fullScreenHotkeyInput.value,
+      inputHotkey: elements.inputHotkeyInput.value,
       ocrLanguages: elements.ocrLanguagesInput.value,
       liveIntervalMs: Number(elements.liveIntervalInput.value),
       frameChangeThreshold: settings.frameChangeThreshold,
@@ -243,9 +234,37 @@ elements.settingsForm.addEventListener('submit', async (event) => {
   }
 });
 
-if (screenMode) window.linguaLens.onScreenTranslationState(render);
-else window.linguaLens.onResultState(render);
+elements.targetLanguageSelect.addEventListener('change', async () => {
+  const language = elements.targetLanguageSelect.value;
+  const languageName = elements.targetLanguageSelect.selectedOptions[0]?.textContent ?? language;
+  try {
+    const current = await window.linguaLens.getSettings();
+    const result = await window.linguaLens.saveSettings({ ...current, targetLanguage: language });
+    if (!result.ok) {
+      elements.targetLanguageSelect.value = current.targetLanguage;
+      toast(result.error ?? '保存失败');
+      return;
+    }
+    settings = result.settings;
+    const source = elements.sourceText.value.trim();
+    if (source) {
+      toast(`目标语言：${languageName}，正在重新翻译…`);
+      try {
+        await window.linguaLens.retryTranslation(source);
+      } catch (error) {
+        toast(error.message ?? String(error));
+      }
+    } else {
+      toast(`目标语言：${languageName}`);
+    }
+  } catch (error) {
+    toast(error.message ?? String(error));
+  }
+});
+
+window.linguaLens.onResultState(render);
 window.linguaLens.getSettings().then((value) => {
   settings = value;
+  elements.targetLanguageSelect.value = value.targetLanguage;
   updateMeta();
 });
