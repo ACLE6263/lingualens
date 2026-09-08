@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 
@@ -932,30 +933,64 @@ function toggleLiveTranslation() {
   return { running: true };
 }
 
-function configureAutoLaunch() {
-  if (process.platform !== 'win32' || !app.isPackaged) return;
-  // 只允许 portable 本体注册自启；直接运行解包出来的 exe（调试）不得
-  // 覆盖注册表，否则自启项会指向临时目录，开机后跑的是旧代码。
+const AUTOSTART_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const AUTOSTART_NAME = 'LinguaLens';
+
+// 自启目标按运行方式决定，保证"从哪种方式安装/启动，开机就以哪种方式启动"：
+// 1. portable 本体（PORTABLE_EXECUTABLE_FILE）→ 注册 portable 路径；
+// 2. 解包构建（win-unpacked / 安装版）→ 注册该 exe；
+// 3. 源码运行（electron .）→ 注册 electron.exe + 项目路径。
+// Temp 解包目录里的内部 exe 不注册（那是 portable 的解包产物，注册它会让
+// 开机后跑临时目录里的旧代码）。
+function getAutoLaunchTarget() {
   const portableExecutable = process.env.PORTABLE_EXECUTABLE_FILE;
-  if (!portableExecutable || !fs.existsSync(portableExecutable)) return;
+  if (portableExecutable && fs.existsSync(portableExecutable)) {
+    return { path: portableExecutable, args: [HIDDEN_STARTUP_FLAG] };
+  }
+  if (app.isPackaged) {
+    const executableDir = path.dirname(process.execPath);
+    if (!executableDir.toLowerCase().startsWith(os.tmpdir().toLowerCase())) {
+      return { path: process.execPath, args: [HIDDEN_STARTUP_FLAG] };
+    }
+    return null;
+  }
+  const appPath = app.getAppPath();
+  if (path.basename(process.execPath).toLowerCase() === 'electron.exe'
+    && fs.existsSync(path.join(appPath, 'package.json'))) {
+    return { path: process.execPath, args: [appPath, HIDDEN_STARTUP_FLAG] };
+  }
+  return null;
+}
+
+function buildRunCommand(target) {
+  const quotedArgs = target.args.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg));
+  return `"${target.path}" ${quotedArgs.join(' ')}`;
+}
+
+function configureAutoLaunch() {
+  if (process.platform !== 'win32') return;
+  const target = getAutoLaunchTarget();
+  if (!target) return;
   try {
-    app.setLoginItemSettings({
-      openAtLogin: true,
-      path: portableExecutable,
-      args: [HIDDEN_STARTUP_FLAG],
-    });
-    // 收敛自启项：保留指向当前 portable 的那一个，删除历史遗留的
-    // 别名键（曾指向 Temp 解包目录或旧路径，会造成开机双启动）。
-    const runKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-    const output = execSync(`reg query "${runKey}"`, { encoding: 'utf8' });
+    const command = buildRunCommand(target);
+    // reg.exe 的 /d 值内部的引号需要用 \" 转义。
+    const escaped = command.replace(/"/g, '\\"');
+    execSync(
+      `reg add "${AUTOSTART_RUN_KEY}" /v ${AUTOSTART_NAME} /t REG_SZ /d "${escaped}" /f`,
+      { stdio: 'ignore' },
+    );
+    // 收敛自启项：我们始终只写 LinguaLens 一个键名，其余 LinguaLens 相关的
+    // 键（旧版 Electron setLoginItemSettings 写下的 electron.app.* 别名键、
+    // 或指向 Temp/旧路径的遗留项）一律删除，避免开机双启动。
+    const output = execSync(`reg query "${AUTOSTART_RUN_KEY}"`, { encoding: 'utf8' });
     for (const line of output.split(/\r?\n/)) {
       const match = line.match(/^\s+(.+?)\s+REG_SZ\s+(.+)$/);
       if (!match) continue;
-      const [, entryName, entryValue] = match;
-      if (!/lingualens/i.test(entryName) && !/lingualens/i.test(entryValue)) continue;
-      if (entryValue.toLowerCase().includes(portableExecutable.toLowerCase())) continue;
+      const [, entryName] = match;
+      if (entryName === AUTOSTART_NAME) continue;
+      if (!/lingualens/i.test(match[1]) && !/lingualens/i.test(match[2])) continue;
       try {
-        execSync(`reg delete "${runKey}" /v "${entryName}" /f`, { stdio: 'ignore' });
+        execSync(`reg delete "${AUTOSTART_RUN_KEY}" /v "${entryName}" /f`, { stdio: 'ignore' });
       } catch {
       }
     }

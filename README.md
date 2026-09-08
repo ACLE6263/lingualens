@@ -102,3 +102,24 @@ GitHub 同类项目调研见 `docs/github-similar-projects.md`。
 - **测试套件与实现同步**：移除从未发布过的旧字段（`captureHotkey`/`screenTranslationHotkey`）迁移用例，改为覆盖现行三组快捷键；新增迟到错误回归用例与 accelerator 校验用例，`npm test` 22/22 通过。
 - **OCR 进度回调并发干扰**：进度回调改为"当前识别调用持有"，在途帧的清理不再影响新调用。
 - **多显示器 display_id 匹配失败静默截错屏**：按显示器名二次匹配，单屏直接使用，多屏无法定位时明确报错。
+
+## 安装与开机自启
+
+**方式一：下载打包版（推荐）**
+
+从 [Releases](https://github.com/ACLE6263/lingualens/releases) 下载 `LinguaLens-x.x.x-portable.exe`，双击即可运行，无需安装。首次运行后会自动注册开机自启（托盘后台静默启动）。
+
+**方式二：源码运行**
+
+```powershell
+git clone https://github.com/ACLE6263/lingualens.git
+cd lingualens
+npm install
+npm start
+```
+
+源码运行同样会注册开机自启，指向 `electron.exe + 项目目录`；移动或删除项目目录前请先退出程序并移除自启：`reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LinguaLens /f`。
+
+### 2026-09 v0.1.1
+
+- **开机自启支持所有运行方式**：portable、解包构建（win-unpacked/安装版）、源码运行（`npm start`）均自动注册自启，并按当前运行方式生成正确的启动命令；自启注册表项收敛为固定键名 `LinguaLens`，自动清理历史遗留别名键，支持带空格的安装路径。
