@@ -1,6 +1,6 @@
 {
   "name": "lingualens",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fast, privacy-minded screen OCR and translation for Windows.",
   "main": "main.js",
   "author": "Codex",

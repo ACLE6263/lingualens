@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   chunkText,
   detectLanguage,
+  parseGoogleClients5Response,
   parseGoogleResponse,
   parseMyMemoryResponse,
   resolveChatCompletionsUrl,
@@ -38,3 +39,19 @@ test('parseMyMemoryResponse validates successful responses', () => {
   assert.equal(parseMyMemoryResponse({ responseStatus: 200, responseData: { translatedText: '你好' } }), '你好');
 });
 
+
+test('parseGoogleClients5Response joins segments and reads detected language', () => {
+  const result = parseGoogleClients5Response([['The weather is nice', 'zh-CN']]);
+  assert.equal(result.text, 'The weather is nice');
+  assert.equal(result.detectedSource, 'zh-CN');
+});
+
+test('parseGoogleClients5Response joins multi-segment payloads', () => {
+  const result = parseGoogleClients5Response([['Hello ', 'en'], ['world', 'en']]);
+  assert.equal(result.text, 'Hello world');
+});
+
+test('parseGoogleClients5Response rejects invalid payloads', () => {
+  assert.throws(() => parseGoogleClients5Response('nope'));
+  assert.throws(() => parseGoogleClients5Response([['', 'en']]));
+});
