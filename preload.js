@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('linguaLens', {
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   showOverlay: () => ipcRenderer.send('overlay:show'),
   closeOverlay: () => ipcRenderer.send('overlay:close'),
+  setOverlayMouseEvents: (ignore) => ipcRenderer.send('overlay:set-mouse-events', ignore),
   setPinned: (pinned) => ipcRenderer.send('window:set-pinned', pinned),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   closeWindow: () => ipcRenderer.send('window:close'),

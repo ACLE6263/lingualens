@@ -11,9 +11,14 @@ test('mergeSettings preserves nested defaults', () => {
 });
 
 
-test('mergeSettings supports independent custom hotkeys and legacy migration', () => {
-  const settings = mergeSettings({ hotkey: 'Ctrl+Alt+1', screenTranslationHotkey: 'Ctrl+Alt+2' });
-  assert.equal(settings.captureHotkey, 'Ctrl+Alt+1');
-  assert.equal(settings.screenTranslationHotkey, 'Ctrl+Alt+2');
+test('mergeSettings supports three independent custom hotkeys', () => {
+  const settings = mergeSettings({
+    hotkey: 'Ctrl+Alt+1',
+    fullScreenHotkey: 'Ctrl+Alt+2',
+    inputHotkey: 'Ctrl+Alt+3',
+  });
   assert.equal(settings.hotkey, 'Ctrl+Alt+1');
+  assert.equal(settings.fullScreenHotkey, 'Ctrl+Alt+2');
+  assert.equal(settings.inputHotkey, 'Ctrl+Alt+3');
+  assert.equal(settings.inputPanelTargetLanguage, 'en');
 });

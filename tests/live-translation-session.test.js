@@ -96,3 +96,41 @@ test('stopping a live session discards an in-flight result', async () => {
   assert.equal((await refresh).status, 'cancelled');
   assert.equal(processed, 0);
 });
+
+test('error from in-flight frame is dropped after session stop', async () => {
+  let rejectCapture;
+  const errors = [];
+  const statuses = [];
+  const scheduler = createScheduler();
+  const session = new LiveTranslationSession({
+    captureFrame: () => new Promise((_, reject) => { rejectCapture = reject; }),
+    processFrame: async () => ({}),
+    onError: (error) => errors.push(error),
+    onStatus: (status) => statuses.push(status.status),
+    scheduler,
+  });
+
+  session.start({ x: 0, y: 0, width: 10, height: 10 });
+  const pending = session.refreshOnce();
+  session.stop();
+  rejectCapture(new Error('late network failure'));
+  const status = await pending;
+
+  assert.equal(status.status, 'cancelled');
+  assert.equal(errors.length, 0, '停止后迟到的错误不应上报 onError');
+});
+
+test('error from in-flight frame is reported while session is running', async () => {
+  const errors = [];
+  const scheduler = createScheduler();
+  const session = new LiveTranslationSession({
+    captureFrame: async () => { throw new Error('network failure'); },
+    processFrame: async () => ({}),
+    onError: (error) => errors.push(error),
+    scheduler,
+  });
+
+  session.start({ x: 0, y: 0, width: 10, height: 10 });
+  await assert.rejects(() => session.refreshOnce(), /network failure/);
+  assert.equal(errors.length, 0, 'refreshOnce 抛出即可，onError 由 interval 回调兜底');
+});

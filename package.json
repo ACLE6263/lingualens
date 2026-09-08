@@ -35,5 +35,8 @@
     "portable": {
       "artifactName": "LinguaLens-0.1.0-portable.exe"
     }
+  },
+  "scripts": {
+    "test": "node --test"
   }
 }

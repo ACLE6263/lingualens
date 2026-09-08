@@ -18,6 +18,7 @@ const {
 
 const { createFrameSignature } = require('./lib/frame-signature');
 const { preprocessBgraBitmap } = require('./lib/image-preprocess');
+const { isValidAccelerator } = require('./lib/accelerator');
 const { LiveTranslationSession } = require('./lib/live-translation-session');
 const { OcrService } = require('./lib/ocr-service');
 const { SettingsStore } = require('./lib/settings-store');
@@ -181,6 +182,49 @@ function closeTranslationOverlay() {
   if (translationOverlayWindow && !translationOverlayWindow.isDestroyed()) {
     translationOverlayWindow.destroy();
   }
+  stopOverlayHoverWatcher();
+}
+
+// 覆盖层整体鼠标穿透后，工具栏（右上角）仍需可点。Chromium 的
+// forward 转发在部分链路上不可靠，这里由主进程轮询光标位置做可靠兜底：
+// 光标进入工具栏热区时恢复交互，离开后重新穿透。
+const OVERLAY_TOOLBAR_HIT_AREA = { width: 340, height: 70 };
+let overlayHoverWatcher = null;
+let overlayAcceptsMouse = true;
+
+function setOverlayMouseEvents(window, ignore) {
+  if (overlayAcceptsMouse === !ignore) return;
+  overlayAcceptsMouse = !ignore;
+  try {
+    window.setIgnoreMouseEvents(ignore, { forward: true });
+  } catch {
+  }
+}
+
+function startOverlayHoverWatcher() {
+  stopOverlayHoverWatcher();
+  overlayAcceptsMouse = true;
+  overlayHoverWatcher = setInterval(() => {
+    const window = translationOverlayWindow;
+    if (!window || window.isDestroyed()) {
+      stopOverlayHoverWatcher();
+      return;
+    }
+    const bounds = window.getBounds();
+    const cursor = screen.getCursorScreenPoint();
+    const inToolbar = cursor.x >= bounds.x + bounds.width - OVERLAY_TOOLBAR_HIT_AREA.width
+      && cursor.x <= bounds.x + bounds.width
+      && cursor.y >= bounds.y
+      && cursor.y <= bounds.y + OVERLAY_TOOLBAR_HIT_AREA.height;
+    setOverlayMouseEvents(window, !inToolbar);
+  }, 100);
+}
+
+function stopOverlayHoverWatcher() {
+  if (overlayHoverWatcher !== null) {
+    clearInterval(overlayHoverWatcher);
+    overlayHoverWatcher = null;
+  }
 }
 
 function getBoundsCenter(bounds) {
@@ -197,8 +241,18 @@ async function captureDisplay(display) {
     types: ['screen'],
     thumbnailSize: { width: physicalWidth, height: physicalHeight },
   });
-  const source = sources.find((item) => String(item.display_id) === String(display.id)) ?? sources[0];
-  if (!source || source.thumbnail.isEmpty()) throw new Error('无法读取屏幕图像。');
+  const byId = sources.find((item) => String(item.display_id) === String(display.id));
+  // Windows 上 display_id 与 screen.id 偶尔不一致；静默回退 sources[0] 在多显示器
+  // 时会截错屏幕且坐标全错。这里按显示器名二次匹配，单屏可直接使用，
+  // 多屏仍无法定位时明确报错而不是截错。
+  const byName = sources.find((item) => display.label && item.name === display.label);
+  const singleSource = sources.length === 1 ? sources[0] : null;
+  const source = byId ?? byName ?? singleSource;
+  if (!source || source.thumbnail.isEmpty()) {
+    throw new Error(sources.length > 1
+      ? `无法定位当前显示器（共 ${sources.length} 块屏幕，ID/名称均未匹配）。`
+      : '无法读取屏幕图像。');
+  }
   return source.thumbnail;
 }
 
@@ -667,13 +721,18 @@ function showInputPanel() {
 
 function registerInputPanelShortcut(accelerator) {
   if (activeInputHotkey) globalShortcut.unregister(activeInputHotkey);
-  const registered = globalShortcut.register(accelerator, () => {
-    try {
-      showInputPanel();
-    } catch (error) {
-      showFatalError(error);
-    }
-  });
+  let registered = false;
+  try {
+    registered = globalShortcut.register(accelerator, () => {
+      try {
+        showInputPanel();
+      } catch (error) {
+        showFatalError(error);
+      }
+    });
+  } catch {
+    registered = false;
+  }
   if (registered) activeInputHotkey = accelerator;
   return registered;
 }
@@ -691,6 +750,7 @@ function showTranslationOverlay(bounds = currentSession.selectionBounds, payload
     translationOverlayWindow.setBounds(overlayBounds);
     translationOverlayWindow.webContents.send('overlay:update', payload);
     translationOverlayWindow.showInactive();
+    startOverlayHoverWatcher();
     return;
   }
 
@@ -708,11 +768,14 @@ function showTranslationOverlay(bounds = currentSession.selectionBounds, payload
   translationOverlayWindow.setAlwaysOnTop(true, 'floating');
   translationOverlayWindow.setContentProtection(true);
   translationOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // 覆盖层整体鼠标穿透（forward 保留 hover），工具栏悬停时由渲染进程切换回交互。
+  translationOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
   translationOverlayWindow.loadFile(path.join(__dirname, 'src', 'translation-overlay.html'));
   translationOverlayWindow.on('closed', () => { translationOverlayWindow = null; });
   translationOverlayWindow.webContents.on('did-finish-load', () => {
     translationOverlayWindow.webContents.send('overlay:init', payload);
     translationOverlayWindow.showInactive();
+    startOverlayHoverWatcher();
   });
 }
 
@@ -804,10 +867,11 @@ function handleLiveStatus({ running, status }) {
 }
 
 function handleLiveError(error) {
+  // 按会话实际状态上报，避免迟到的错误把已停止的 UI 改回"运行中"。
   sendResultState({
-    liveRunning: true,
-    liveStatus: 'error',
-    message: '实时翻译更新失败，仍会继续监听。',
+    liveRunning: liveTranslationSession?.isRunning() ?? false,
+    liveStatus: liveTranslationSession?.isRunning() ? 'error' : 'stopped',
+    message: liveTranslationSession?.isRunning() ? '实时翻译更新失败，仍会继续监听。' : '实时翻译已停止',
     error: error instanceof Error ? error.message : String(error),
   });
 }
@@ -898,20 +962,34 @@ function configureAutoLaunch() {
   } catch {
   }
 }
+// Electron accelerator 格式校验：至少一个修饰键 + 一个键名，非法值直接
+// 拒绝保存，避免 globalShortcut.register 同步抛异常破坏回滚与下次启动。
+// 规则实现见 lib/accelerator.js（可单测）。
+
 function registerFullScreenTranslationShortcut(accelerator) {
   if (activeFullScreenHotkey) globalShortcut.unregister(activeFullScreenHotkey);
-  const registered = globalShortcut.register(accelerator, () => {
-    startFullScreenTranslation().catch(showFatalError);
-  });
+  let registered = false;
+  try {
+    registered = globalShortcut.register(accelerator, () => {
+      startFullScreenTranslation().catch(showFatalError);
+    });
+  } catch {
+    registered = false;
+  }
   if (registered) activeFullScreenHotkey = accelerator;
   return registered;
 }
 
 function registerCaptureShortcut(accelerator) {
   if (activeHotkey) globalShortcut.unregister(activeHotkey);
-  const registered = globalShortcut.register(accelerator, () => {
-    startCapture().catch(showFatalError);
-  });
+  let registered = false;
+  try {
+    registered = globalShortcut.register(accelerator, () => {
+      startCapture().catch(showFatalError);
+    });
+  } catch {
+    registered = false;
+  }
   if (registered) activeHotkey = accelerator;
   return registered;
 }
@@ -997,6 +1075,16 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('settings:get', () => settingsStore.getPublicSettings());
   ipcMain.handle('settings:save', (_event, nextSettings) => {
+    const hotkeyFields = [
+      ['截取翻译快捷键', nextSettings?.hotkey],
+      ['全屏翻译快捷键', nextSettings?.fullScreenHotkey],
+      ['输入翻译快捷键', nextSettings?.inputHotkey],
+    ];
+    for (const [label, value] of hotkeyFields) {
+      if (value !== undefined && !isValidAccelerator(value)) {
+        return { ok: false, error: `${label}「${value}」格式无效：需要"修饰键+按键"的组合，例如 Ctrl+Alt+J。` };
+      }
+    }
     const previous = settingsStore.getRuntimeSettings();
     const saved = settingsStore.save(nextSettings);
     let failure = null;
@@ -1023,6 +1111,10 @@ function registerIpcHandlers() {
   ipcMain.on('clipboard:write', (_event, text) => clipboard.writeText(String(text ?? '')));
   ipcMain.on('overlay:show', () => showTranslationOverlay());
   ipcMain.on('overlay:close', () => closeTranslationOverlay());
+  ipcMain.on('overlay:set-mouse-events', (event, ignore) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window) setOverlayMouseEvents(window, Boolean(ignore));
+  });
   ipcMain.on('window:set-pinned', (event, pinned) => {
     BrowserWindow.fromWebContents(event.sender)?.setAlwaysOnTop(Boolean(pinned), 'floating');
   });

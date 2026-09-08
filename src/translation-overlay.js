@@ -50,6 +50,19 @@ function render(payload = {}) {
 document.querySelector('#closeOverlayButton').addEventListener('click', () => {
   window.linguaLens.closeOverlay();
 });
+
+// 窗口默认整体鼠标穿透（forward 保留 hover 事件），只有鼠标进入工具栏时
+// 恢复交互，离开后重新穿透——底层应用在覆盖层显示期间仍可正常点击。
+const overlayToolbar = document.querySelector('.overlay-toolbar');
+overlayToolbar.addEventListener('mouseenter', () => {
+  window.linguaLens.setOverlayMouseEvents(false);
+});
+overlayToolbar.addEventListener('mouseleave', () => {
+  window.linguaLens.setOverlayMouseEvents(true);
+});
+window.addEventListener('blur', () => {
+  window.linguaLens.setOverlayMouseEvents(true);
+});
 window.addEventListener('resize', () => {
   for (const element of overlayBlocks.children) {
     const heightPercent = Number.parseFloat(element.style.minHeight);
