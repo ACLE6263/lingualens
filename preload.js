@@ -1,4 +1,4 @@
-﻿const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 function subscribe(channel, callback) {
   const listener = (_event, payload) => callback(payload);
@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('linguaLens', {
   retryTranslation: (sourceText) => ipcRenderer.invoke('translation:retry', sourceText),
   toggleLiveTranslation: () => ipcRenderer.invoke('live:toggle'),
   inputPanelTranslate: (text) => ipcRenderer.invoke('input-panel:translate', text),
+  speakTranslation: (payload) => ipcRenderer.invoke('tts:speak', payload),
+  stopSpeaking: () => ipcRenderer.invoke('tts:stop'),
+  onSpeakingState: (callback) => subscribe('tts:state', callback),
   hideInputPanel: () => ipcRenderer.send('input-panel:hide'),
   onInputPanelShown: (callback) => subscribe('input-panel:shown', callback),
   getSettings: () => ipcRenderer.invoke('settings:get'),

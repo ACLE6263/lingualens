@@ -38,7 +38,17 @@
 
       <div class="action-bar">
         <span id="statusText" class="meta-text">输入后自动翻译</span>
-        <button id="copyButton" class="secondary-button" disabled>复制译文</button>
+        <div class="action-buttons">
+          <button id="speakButton" class="secondary-button speak-button" disabled title="朗读译文">
+            <svg class="speak-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M2.8 6.2h2.1L7.6 3.9v8.2L4.9 9.8H2.8z" />
+              <path class="speak-wave speak-wave-1" d="M9.8 6.1a2.7 2.7 0 0 1 0 3.8" />
+              <path class="speak-wave speak-wave-2" d="M11.6 4.3a5.2 5.2 0 0 1 0 7.4" />
+            </svg>
+            <span id="speakLabel">朗读文本</span>
+          </button>
+          <button id="copyButton" class="secondary-button" disabled>复制译文</button>
+        </div>
       </div>
     </main>
     <script src="input-panel.js"></script>

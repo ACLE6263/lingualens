@@ -51,7 +51,21 @@ textarea::placeholder { color: #5f6b80; }
 .translated-text { min-height: 52px; white-space: pre-wrap; line-height: 1.6; color: #f6f8ff; overflow-y: auto; }
 .translated-text.empty { color: #68748a; }
 .action-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.meta-text { color: var(--muted); font-size: 12px; }
+.meta-text { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-buttons { display: flex; gap: 8px; flex: none; }
+.speak-button { display: inline-flex; align-items: center; gap: 7px; }
+.speak-icon { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
+.speak-wave { opacity: 0.35; transition: opacity 140ms ease; }
+.speak-button:not(:disabled):hover .speak-wave { opacity: 0.8; }
+/* 朗读中：主色描边 + 声波脉动。动效只在响应"开始朗读"这个动作时出现，
+   用来表明正在出声，不作为装饰。 */
+.speak-button.speaking { color: #fff; border-color: rgba(126, 153, 255, 0.55); background: rgba(126, 153, 255, 0.14); }
+.speak-button.speaking .speak-wave { animation: ll-speak-wave 1.15s ease-in-out infinite; }
+.speak-button.speaking .speak-wave-2 { animation-delay: 0.18s; }
+@keyframes ll-speak-wave { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .speak-button.speaking .speak-wave { animation: none; opacity: 1; }
+}
 .secondary-button {
   padding: 8px 14px; border: 1px solid var(--stroke); border-radius: 10px; cursor: pointer;
   color: #cbd3e1; background: rgba(255, 255, 255, 0.045);

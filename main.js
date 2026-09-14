@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
+const { execSync, spawn } = require('node:child_process');
 
 const {
   app,
@@ -23,6 +23,7 @@ const { isValidAccelerator } = require('./lib/accelerator');
 const { LiveTranslationSession } = require('./lib/live-translation-session');
 const { OcrService } = require('./lib/ocr-service');
 const { SettingsStore } = require('./lib/settings-store');
+const { TtsService } = require('./lib/tts-service');
 const { translateBlocks, translateText } = require('./lib/translation-service');
 const { createTrayIconBuffer } = require('./lib/tray-icon');
 
@@ -43,6 +44,7 @@ let tray = null;
 let settingsStore = null;
 let ocrService = null;
 let liveTranslationSession = null;
+let ttsService = null;
 let isQuitting = false;
 let activeHotkey = null;
 let activeInputHotkey = null;
@@ -676,6 +678,27 @@ function showFullScreenStatus(bounds, message) {
   });
 }
 
+function ttsStatePayload(event) {
+  if (event.type === 'started') {
+    return { speaking: true, voice: event.voice ?? '', matched: Boolean(event.matched) };
+  }
+  if (event.type === 'done') return { speaking: false, reason: 'done' };
+  if (event.type === 'stopped') return { speaking: false, reason: 'stopped' };
+  return { speaking: false, reason: 'error', message: event.message ?? '朗读失败。' };
+}
+
+function broadcastTtsState(event) {
+  if (!inputPanelWindow || inputPanelWindow.isDestroyed()) return;
+  inputPanelWindow.webContents.send('tts:state', ttsStatePayload(event));
+}
+
+// 停止朗读。面板还开着时顺手重新预热，下次点击依然即时出声。
+function stopSpeaking({ reWarm = false } = {}) {
+  if (!ttsService) return;
+  ttsService.stop();
+  if (reWarm) ttsService.warmUp();
+}
+
 function createInputPanelWindow() {
   if (inputPanelWindow && !inputPanelWindow.isDestroyed()) return inputPanelWindow;
 
@@ -693,13 +716,17 @@ function createInputPanelWindow() {
   inputPanelWindow.setAlwaysOnTop(true, 'floating');
   inputPanelWindow.setContentProtection(true);
   inputPanelWindow.loadFile(path.join(__dirname, 'src', 'input-panel.html'));
-  inputPanelWindow.on('closed', () => { inputPanelWindow = null; });
+  inputPanelWindow.on('closed', () => {
+    stopSpeaking();
+    inputPanelWindow = null;
+  });
   return inputPanelWindow;
 }
 
 function showInputPanel() {
   const panel = createInputPanelWindow();
   if (panel.isVisible()) {
+    stopSpeaking();
     panel.hide();
     return;
   }
@@ -716,6 +743,8 @@ function showInputPanel() {
   );
   panel.setBounds({ x: Math.round(x), y: Math.round(y), ...INPUT_PANEL_SIZE });
   if (!panel.webContents.isLoading()) panel.webContents.send('input-panel:shown');
+  // 预热系统语音宿主进程：面板打开后再点击「朗读」就不用等冷启动。
+  ttsService?.warmUp();
   panel.show();
   panel.focus();
 }
@@ -1106,7 +1135,20 @@ function registerIpcHandlers() {
     return translateText(normalized, settings);
   });
   ipcMain.on('input-panel:hide', () => {
+    stopSpeaking();
     if (inputPanelWindow && !inputPanelWindow.isDestroyed()) inputPanelWindow.hide();
+  });
+  ipcMain.handle('tts:speak', async (_event, payload) => {
+    const text = String(payload?.text ?? '').trim();
+    if (!text) return { ok: false, error: '没有可朗读的译文。' };
+    if (!ttsService) return { ok: false, error: '朗读服务未就绪。' };
+    return ttsService.speak(text, payload?.language ?? 'en');
+  });
+  ipcMain.handle('tts:stop', () => {
+    const panelOpen = Boolean(inputPanelWindow && !inputPanelWindow.isDestroyed()
+      && inputPanelWindow.isVisible());
+    stopSpeaking({ reWarm: panelOpen });
+    return { ok: true };
   });
   ipcMain.handle('settings:get', () => settingsStore.getPublicSettings());
   ipcMain.handle('settings:save', (_event, nextSettings) => {
@@ -1174,6 +1216,7 @@ if (!hasSingleInstanceLock) {
       safeStorage,
     });
     ocrService = new OcrService({ cachePath: path.join(app.getPath('userData'), 'ocr-cache') });
+    ttsService = new TtsService({ onEvent: (event) => broadcastTtsState(event) });
     createLiveTranslationSession();
     registerIpcHandlers();
     createTray();
@@ -1201,5 +1244,6 @@ app.on('before-quit', () => {
   isQuitting = true;
   globalShortcut.unregisterAll();
   liveTranslationSession?.stop();
+  ttsService?.dispose();
   ocrService?.terminate();
 });
