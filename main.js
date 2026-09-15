@@ -17,10 +17,12 @@ const {
   Tray,
 } = require('electron');
 
+const { computeBlockBackgrounds } = require('./lib/block-background');
 const { createFrameSignature } = require('./lib/frame-signature');
 const { preprocessBgraBitmap } = require('./lib/image-preprocess');
 const { isValidAccelerator } = require('./lib/accelerator');
 const { LiveTranslationSession } = require('./lib/live-translation-session');
+const { groupLinesIntoParagraphs } = require('./lib/ocr-layout');
 const { OcrService } = require('./lib/ocr-service');
 const { SettingsStore } = require('./lib/settings-store');
 const { TtsService } = require('./lib/tts-service');
@@ -237,6 +239,49 @@ function getBoundsCenter(bounds) {
   };
 }
 
+
+// 全屏翻译只针对前台窗口：用 Win32 记录触发时刻的前台窗口矩形（物理像素），
+// 过滤掉桌面图标、便签等窗口外噪声。PowerShell 大多 DPI 感知不完整，
+// 因此同时保留物理坐标与按缩放换算的 DIP 坐标两种解释。
+function getForegroundWindowRect() {
+  try {
+    const script = [
+      "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out R r); public struct R { public int L; public int T; public int Rt; public int B; }' -Name W -Namespace N",
+      '$h = [N.W]::GetForegroundWindow()',
+      '$r = New-Object N.W+R',
+      '[N.W]::GetWindowRect($h, [ref]$r) | Out-Null',
+      '"$($r.L),$($r.T),$($r.Rt),$($r.B)"',
+    ].join('; ');
+    const output = execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command -',
+      { input: script, encoding: 'utf8', timeout: 6000 }).trim();
+    const parts = output.split(',').map(Number);
+    if (parts.length === 4 && parts.every((v) => Number.isFinite(v)) && parts[2] > parts[0] && parts[3] > parts[1]) {
+      return { left: parts[0], top: parts[1], right: parts[2], bottom: parts[3] };
+    }
+  } catch {
+  }
+  return null;
+}
+
+// 块中心（DIP，屏幕坐标）是否落在前台窗口内。物理/虚拟两套坐标都试。
+function blockInForeground(block, displayBounds, scaleFactor, foregroundRect) {
+  if (!foregroundRect) return true;
+  const centerX = displayBounds.x + (block.relative.x + block.relative.width / 2) * displayBounds.width;
+  const centerY = displayBounds.y + (block.relative.y + block.relative.height / 2) * displayBounds.height;
+  const margin = 40;
+  const candidates = [
+    { left: foregroundRect.left, top: foregroundRect.top, right: foregroundRect.right, bottom: foregroundRect.bottom },
+    {
+      left: foregroundRect.left / scaleFactor,
+      top: foregroundRect.top / scaleFactor,
+      right: foregroundRect.right / scaleFactor,
+      bottom: foregroundRect.bottom / scaleFactor,
+    },
+  ];
+  return candidates.some((r) => centerX >= r.left - margin && centerX <= r.right + margin
+    && centerY >= r.top - margin && centerY <= r.bottom + margin);
+}
+
 async function captureDisplay(display) {
   const physicalWidth = Math.max(1, Math.round(display.bounds.width * display.scaleFactor));
   const physicalHeight = Math.max(1, Math.round(display.bounds.height * display.scaleFactor));
@@ -398,7 +443,8 @@ async function translateOcrResult(ocrResult, settings) {
   }
 
   if (ocrResult.lines.length > 0) {
-    const translatedBlocks = await translateBlocks(ocrResult.lines, settings);
+    // 行合并成段后按段翻译：句子完整、请求数大幅减少、覆盖层不再互相压盖。
+    const translatedBlocks = await translateBlocks(groupLinesIntoParagraphs(ocrResult.lines), settings);
     const providers = [...new Set(
       translatedBlocks.map((block) => block.provider).filter((provider) => provider && provider !== 'Original'),
     )];
@@ -466,6 +512,11 @@ async function startFullScreenTranslation() {
       error: null,
     });
 
+    const foregroundRect = getForegroundWindowRect();
+    // 自己的结果窗口（含上一次截图的预览缩略图）不能出现在截图里，
+    // 否则 OCR 会读到套娃内容并产生覆盖块。
+    const resultWindowWasVisible = Boolean(resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible());
+    if (resultWindowWasVisible) resultWindow.hide();
     const screenshot = await captureDisplay(display);
     const settings = settingsStore.getRuntimeSettings();
     showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
@@ -516,10 +567,20 @@ async function startFullScreenTranslation() {
       error: null,
     });
 
+    if (resultWindowWasVisible) resultWindow.showInactive();
     if (result.sourceText) {
+      const sizedBlocks = computeBlockBackgrounds(
+        screenshot.toBitmap(),
+        screenshot.getSize().width,
+        screenshot.getSize().height,
+        result.translatedBlocks,
+      );
+      const visibleBlocks = sizedBlocks.filter((block) => blockInForeground(
+        block, displayBounds, display.scaleFactor, foregroundRect,
+      ));
       showTranslationOverlay(displayBounds, {
         text: result.translatedText,
-        blocks: result.translatedBlocks,
+        blocks: visibleBlocks.length > 0 ? visibleBlocks : sizedBlocks,
         liveRunning: false,
       });
     } else {
@@ -811,6 +872,20 @@ function showTranslationOverlay(bounds = currentSession.selectionBounds, payload
 
 function applyLiveResult(result, frame) {
   currentSelectionSignature = frame.signature;
+  // 实时链路同样做无缝背景：用区域截图估计每个文本块的背景色。
+  if (result.translatedBlocks?.length) {
+    try {
+      const regionImage = nativeImage.createFromDataURL(frame.previewImageDataUrl);
+      const size = regionImage.getSize();
+      result.translatedBlocks = computeBlockBackgrounds(
+        regionImage.toBitmap(),
+        size.width,
+        size.height,
+        result.translatedBlocks,
+      );
+    } catch {
+    }
+  }
   if (!result.sourceText) {
     sendResultState({
       phase: 'empty',

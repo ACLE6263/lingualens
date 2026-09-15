@@ -9,6 +9,11 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
   color: #f8faff; background: rgba(8, 12, 20, 0.91); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.34);
   line-height: 1.25; white-space: pre-wrap; overflow-wrap: anywhere; text-shadow: 0 1px 2px #000;
 }
+/* 背景可无缝还原的块：填原始背景色 + 对比文字色，贴近"原文被替换"的效果 */
+.translation-block.flat {
+  border: 1px solid transparent; border-radius: 2px;
+  background: transparent; box-shadow: none; text-shadow: none;
+}
 .overlay-fallback {
   position: absolute; inset: 0; padding: 34px 14px 14px; overflow: auto;
   color: #f8faff; background: rgba(10, 14, 23, 0.9); white-space: pre-wrap;
