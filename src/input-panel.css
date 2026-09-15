@@ -31,12 +31,21 @@ button { color: inherit; }
 .icon-button { width: 36px; border: 0; color: #aeb8ca; background: transparent; cursor: pointer; font-size: 16px; }
 .icon-button:hover { color: white; background: rgba(255, 255, 255, 0.07); }
 .icon-button.danger:hover { background: #c43d4e; }
-main { height: calc(100vh - 40px); display: grid; grid-template-rows: auto auto auto 1fr; gap: 10px; padding: 12px 14px 12px; }
+/* 纵向 flex 布局：输入卡固定高度（textarea 有上限），结果卡占据剩余空间并
+   内部滚动——译文再长也不会把操作栏顶出窗口，滚轮直接可用。 */
+main {
+  height: calc(100vh - 40px); display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px;
+}
 .text-card {
   border: 1px solid var(--stroke); background: var(--panel); padding: 10px 12px; border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18); backdrop-filter: blur(18px);
 }
-.translated-card { background: linear-gradient(145deg, rgba(31, 39, 57, 0.9), rgba(27, 31, 50, 0.9)); }
+.text-card.input-card { flex: none; }
+.text-card.translated-card {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  background: linear-gradient(145deg, rgba(31, 39, 57, 0.9), rgba(27, 31, 50, 0.9));
+}
 .card-heading { display: flex; justify-content: space-between; margin-bottom: 6px; color: #aeb8c9; font-size: 11px; font-weight: 700; }
 .heading-right { display: flex; gap: 8px; align-items: center; font-weight: 500; }
 .lang-select { width: auto; padding: 3px 8px; border: 1px solid var(--stroke); border-radius: 8px; outline: none; color: #d0d7e4; background: #151b27; font-size: 11px; cursor: pointer; }
@@ -48,9 +57,12 @@ textarea {
   color: #dfe5f0; background: transparent; line-height: 1.55;
 }
 textarea::placeholder { color: #5f6b80; }
-.translated-text { min-height: 52px; white-space: pre-wrap; line-height: 1.6; color: #f6f8ff; overflow-y: auto; }
-.translated-text.empty { color: #68748a; }
-.action-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.translated-text {
+  flex: 1 1 auto; min-height: 52px; overflow-y: auto; overscroll-behavior: contain;
+  white-space: pre-wrap; line-height: 1.6; color: #f6f8ff;
+}
+.translated-text.empty { color: #68748a; overflow-y: visible; }
+.action-bar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .meta-text { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .action-buttons { display: flex; gap: 8px; flex: none; }
 .speak-button { display: inline-flex; align-items: center; gap: 7px; }
