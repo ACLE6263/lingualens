@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync, spawn } = require('node:child_process');
+const { execFile, execSync, spawn } = require('node:child_process');
 
 const {
   app,
@@ -193,7 +193,7 @@ function closeTranslationOverlay() {
 // 覆盖层整体鼠标穿透后，工具栏（右上角）仍需可点。Chromium 的
 // forward 转发在部分链路上不可靠，这里由主进程轮询光标位置做可靠兜底：
 // 光标进入工具栏热区时恢复交互，离开后重新穿透。
-const OVERLAY_TOOLBAR_HIT_AREA = { width: 340, height: 70 };
+const OVERLAY_TOOLBAR_HIT_AREA = { width: 230, height: 40 };
 let overlayHoverWatcher = null;
 let overlayAcceptsMouse = true;
 
@@ -243,7 +243,7 @@ function getBoundsCenter(bounds) {
 // 全屏翻译只针对前台窗口：用 Win32 记录触发时刻的前台窗口矩形（物理像素），
 // 过滤掉桌面图标、便签等窗口外噪声。PowerShell 大多 DPI 感知不完整，
 // 因此同时保留物理坐标与按缩放换算的 DIP 坐标两种解释。
-function getForegroundWindowRect() {
+async function getForegroundWindowRect() {
   try {
     const script = [
       "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out R r); public struct R { public int L; public int T; public int Rt; public int B; }' -Name W -Namespace N",
@@ -252,8 +252,12 @@ function getForegroundWindowRect() {
       '[N.W]::GetWindowRect($h, [ref]$r) | Out-Null',
       '"$($r.L),$($r.T),$($r.Rt),$($r.B)"',
     ].join('; ');
-    const output = execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command -',
-      { input: script, encoding: 'utf8', timeout: 6000 }).trim();
+    const output = await new Promise((resolve) => {
+      const child = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '-'],
+        { encoding: 'utf8', timeout: 2500 }, (error, stdout) => resolve(String(stdout ?? '').trim()));
+      child.on('error', () => resolve(''));
+      child.stdin.end(script);
+    });
     const parts = output.split(',').map(Number);
     if (parts.length === 4 && parts.every((v) => Number.isFinite(v)) && parts[2] > parts[0] && parts[3] > parts[1]) {
       return { left: parts[0], top: parts[1], right: parts[2], bottom: parts[3] };
@@ -444,7 +448,7 @@ async function translateOcrResult(ocrResult, settings) {
 
   if (ocrResult.lines.length > 0) {
     // 行合并成段后按段翻译：句子完整、请求数大幅减少、覆盖层不再互相压盖。
-    const translatedBlocks = await translateBlocks(groupLinesIntoParagraphs(ocrResult.lines), settings);
+    const translatedBlocks = await translateBlocks(groupLinesIntoParagraphs(ocrResult.lines, ocrResult.imageSize), settings);
     const providers = [...new Set(
       translatedBlocks.map((block) => block.provider).filter((provider) => provider && provider !== 'Original'),
     )];
@@ -492,6 +496,7 @@ async function startFullScreenTranslation() {
 
   fullScreenTranslationStarting = true;
   let displayBounds = null;
+  let resultWindowWasVisible = false;
   try {
     hideCaptureWindow();
     stopLiveTranslation();
@@ -512,11 +517,11 @@ async function startFullScreenTranslation() {
       error: null,
     });
 
-    const foregroundRect = getForegroundWindowRect();
     // 自己的结果窗口（含上一次截图的预览缩略图）不能出现在截图里，
     // 否则 OCR 会读到套娃内容并产生覆盖块。
-    const resultWindowWasVisible = Boolean(resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible());
+    resultWindowWasVisible = Boolean(resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible());
     if (resultWindowWasVisible) resultWindow.hide();
+    const foregroundRect = await getForegroundWindowRect();
     const screenshot = await captureDisplay(display);
     const settings = settingsStore.getRuntimeSettings();
     showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
@@ -596,6 +601,9 @@ async function startFullScreenTranslation() {
     if (displayBounds) showFullScreenStatus(displayBounds, '全屏翻译失败：' + message);
     else showFatalError(error);
   } finally {
+    if (resultWindowWasVisible && resultWindow && !resultWindow.isDestroyed() && !resultWindow.isVisible()) {
+      resultWindow.showInactive();
+    }
     fullScreenTranslationStarting = false;
   }
 }
