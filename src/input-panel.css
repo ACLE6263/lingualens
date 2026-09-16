@@ -53,12 +53,12 @@ main {
 .lang-select:focus { border-color: rgba(120, 148, 255, 0.65); box-shadow: 0 0 0 3px rgba(120, 148, 255, 0.1); }
 .confidence { color: #758199; font-weight: 500; }
 textarea {
-  width: 100%; min-height: 64px; max-height: 96px; resize: none; border: 0; outline: 0;
+  width: 100%; min-height: 96px; max-height: 160px; resize: none; border: 0; outline: 0;
   color: #dfe5f0; background: transparent; line-height: 1.55;
 }
 textarea::placeholder { color: #5f6b80; }
 .translated-text {
-  flex: 1 1 auto; min-height: 52px; overflow-y: auto; overscroll-behavior: contain;
+  flex: 1 1 auto; min-height: 88px; overflow-y: auto; overscroll-behavior: contain;
   white-space: pre-wrap; line-height: 1.6; color: #f6f8ff;
 }
 .translated-text.empty { color: #68748a; overflow-y: visible; }

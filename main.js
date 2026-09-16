@@ -30,7 +30,7 @@ const { translateBlocks, translateText } = require('./lib/translation-service');
 const { createTrayIconBuffer } = require('./lib/tray-icon');
 
 const DEFAULT_WINDOW_SIZE = { width: 560, height: 700 };
-const INPUT_PANEL_SIZE = { width: 460, height: 324 };
+const INPUT_PANEL_SIZE = { width: 640, height: 560 };
 const MAX_OCR_PIXELS = 8_000_000;
 const HIDDEN_STARTUP_FLAG = '--hidden-startup';
 const startHidden = process.argv.includes(HIDDEN_STARTUP_FLAG);
