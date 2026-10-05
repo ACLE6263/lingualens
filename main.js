@@ -95,7 +95,7 @@ function createResultWindow() {
     skipTaskbar: true,
   }));
   hardenWindow(resultWindow);
-  resultWindow.setContentProtection(true);
+  applyContentProtection(resultWindow);
   resultWindow.loadFile(path.join(__dirname, 'src', 'result.html'));
   resultWindow.on('close', (event) => {
     if (!isQuitting) {
@@ -286,6 +286,53 @@ function blockInForeground(block, displayBounds, scaleFactor, foregroundRect) {
     && centerY >= r.top - margin && centerY <= r.bottom + margin);
 }
 
+// Windows 上 setContentProtection(true) 等价于 SetWindowDisplayAffinity(WDA_MONITOR)，
+// 会把窗口标记为"受保护内容"：NVIDIA ShadowPlay（即时回放）等录屏软件检测到
+// 之后会停止录制。因此默认不启用系统级保护，改为截图前临时隐藏自身窗口，
+// 防止 OCR 读到自己的界面；仅在用户显式开启 captureProtection 设置时才调用。
+function applyContentProtection(window) {
+  if (!window || window.isDestroyed()) return;
+  try {
+    window.setContentProtection(Boolean(settingsStore?.getRuntimeSettings()?.captureProtection));
+  } catch {
+  }
+}
+
+function applyAllContentProtection() {
+  [resultWindow, inputPanelWindow, translationOverlayWindow].forEach(applyContentProtection);
+}
+
+const OWN_WINDOW_HIDE_SETTLE_MS = 80;
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x
+    && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+// 防截屏保护关闭时的"防套娃"兜底：截图前隐藏与截取目标重叠的自身可见窗口，
+// 截完立即恢复。只有重叠的窗口才隐藏（例如实时翻译时放在选区旁的结果窗口
+// 不会闪烁）；覆盖层与选区完全重合，实时翻译的每个刷新周期会短暂闪现原文。
+async function captureDisplayWithoutOwnWindows(display, targetBounds) {
+  if (settingsStore?.getRuntimeSettings()?.captureProtection) {
+    return captureDisplay(display);
+  }
+  const windows = [translationOverlayWindow, resultWindow, inputPanelWindow]
+    .filter((window) => window && !window.isDestroyed() && window.isVisible())
+    .filter((window) => !targetBounds || rectsIntersect(window.getBounds(), targetBounds));
+  for (const window of windows) window.hide();
+  try {
+    if (windows.length > 0) {
+      // 等待 DWM 把隐藏窗口从合成帧中移除，否则截图可能仍带残影。
+      await new Promise((resolve) => setTimeout(resolve, OWN_WINDOW_HIDE_SETTLE_MS));
+    }
+    return await captureDisplay(display);
+  } finally {
+    for (const window of windows) {
+      if (!window.isDestroyed()) window.showInactive();
+    }
+  }
+}
+
 async function captureDisplay(display) {
   const physicalWidth = Math.max(1, Math.round(display.bounds.width * display.scaleFactor));
   const physicalHeight = Math.max(1, Math.round(display.bounds.height * display.scaleFactor));
@@ -363,7 +410,7 @@ function prepareImageForOcr(image) {
 
 async function captureRegion(bounds) {
   const display = screen.getDisplayNearestPoint(getBoundsCenter(bounds));
-  const screenshot = await captureDisplay(display);
+  const screenshot = await captureDisplayWithoutOwnWindows(display, bounds);
   const screenshotSize = screenshot.getSize();
   const scaleX = screenshotSize.width / display.bounds.width;
   const scaleY = screenshotSize.height / display.bounds.height;
@@ -414,7 +461,7 @@ async function startCapture() {
     const display = screen.getDisplayNearestPoint(cursor);
     const [window, screenshotImage] = await Promise.all([
       ensureCaptureWindow(display),
-      captureDisplay(display),
+      captureDisplayWithoutOwnWindows(display, display.bounds),
     ]);
     const screenshot = createCapturePreviewDataUrl(screenshotImage);
     window.webContents.send('capture:init', {
@@ -522,7 +569,7 @@ async function startFullScreenTranslation() {
     resultWindowWasVisible = Boolean(resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible());
     if (resultWindowWasVisible) resultWindow.hide();
     const foregroundRect = await getForegroundWindowRect();
-    const screenshot = await captureDisplay(display);
+    const screenshot = await captureDisplayWithoutOwnWindows(display, display.bounds);
     const settings = settingsStore.getRuntimeSettings();
     showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
     const result = await recognizeAndTranslate(
@@ -783,7 +830,7 @@ function createInputPanelWindow() {
   }));
   hardenWindow(inputPanelWindow);
   inputPanelWindow.setAlwaysOnTop(true, 'floating');
-  inputPanelWindow.setContentProtection(true);
+  applyContentProtection(inputPanelWindow);
   inputPanelWindow.loadFile(path.join(__dirname, 'src', 'input-panel.html'));
   inputPanelWindow.on('closed', () => {
     stopSpeaking();
@@ -865,7 +912,7 @@ function showTranslationOverlay(bounds = currentSession.selectionBounds, payload
   }));
   hardenWindow(translationOverlayWindow);
   translationOverlayWindow.setAlwaysOnTop(true, 'floating');
-  translationOverlayWindow.setContentProtection(true);
+  applyContentProtection(translationOverlayWindow);
   translationOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // 覆盖层整体鼠标穿透（forward 保留 hover），工具栏悬停时由渲染进程切换回交互。
   translationOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
@@ -1247,6 +1294,7 @@ function registerIpcHandlers() {
     }
     const previous = settingsStore.getRuntimeSettings();
     const saved = settingsStore.save(nextSettings);
+    applyAllContentProtection();
     let failure = null;
     if (!registerCaptureShortcut(saved.hotkey)) {
       failure = `截取翻译快捷键 ${saved.hotkey} 无法注册，请换一个组合。`;
@@ -1257,6 +1305,7 @@ function registerIpcHandlers() {
     }
     if (failure) {
       settingsStore.save(previous);
+      applyAllContentProtection();
       registerCaptureShortcut(previous.hotkey);
       registerFullScreenTranslationShortcut(previous.fullScreenHotkey);
       registerInputPanelShortcut(previous.inputHotkey);

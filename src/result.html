@@ -106,6 +106,10 @@
             <option value="4000">4 秒（更省资源）</option>
           </select>
         </label>
+        <div class="checkbox-row">
+          <label><input id="captureProtectionInput" type="checkbox" />窗口防截屏保护</label>
+          <span class="checkbox-hint">开启后 LinguaLens 的窗口对截图/录屏软件隐藏。注意：这会被 NVIDIA ShadowPlay（即时回放）等识别为“受保护内容”并导致其停止录制，因此默认关闭；关闭时应用会在自己截图的瞬间临时隐藏窗口，效果相同且不影响录屏。</span>
+        </div>
         <fieldset>
           <legend>翻译引擎</legend>
           <div class="provider-options">

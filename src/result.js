@@ -1,5 +1,6 @@
 const elements = {
   captureButton: document.querySelector('#captureButton'),
+  captureProtectionInput: document.querySelector('#captureProtectionInput'),
   closeButton: document.querySelector('#closeButton'),
   confidenceText: document.querySelector('#confidenceText'),
   copyButton: document.querySelector('#copyButton'),
@@ -130,6 +131,7 @@ async function openSettings() {
   elements.inputHotkeyInput.value = settings.inputHotkey ?? 'Shift+Alt+R';
   elements.ocrLanguagesInput.value = settings.ocrLanguages;
   elements.liveIntervalInput.value = String(settings.liveIntervalMs);
+  elements.captureProtectionInput.checked = Boolean(settings.captureProtection);
   elements.openaiBaseUrlInput.value = settings.openai.baseUrl;
   elements.openaiModelInput.value = settings.openai.model;
   elements.openaiApiKeyInput.value = '';
@@ -207,6 +209,7 @@ elements.settingsForm.addEventListener('submit', async (event) => {
       ocrLanguages: elements.ocrLanguagesInput.value,
       liveIntervalMs: Number(elements.liveIntervalInput.value),
       frameChangeThreshold: settings.frameChangeThreshold,
+      captureProtection: elements.captureProtectionInput.checked,
       translationProvider: provider,
       google: settings.google,
       openai: {

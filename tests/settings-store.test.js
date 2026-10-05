@@ -22,3 +22,29 @@ test('mergeSettings supports three independent custom hotkeys', () => {
   assert.equal(settings.inputHotkey, 'Ctrl+Alt+3');
   assert.equal(settings.inputPanelTargetLanguage, 'en');
 });
+
+test('captureProtection 默认关闭（避免触发 NVIDIA ShadowPlay 停录）', () => {
+  assert.equal(mergeSettings().captureProtection, false);
+  assert.equal(mergeSettings({ captureProtection: true }).captureProtection, true);
+});
+
+test('save 持久化 captureProtection，缺省字段不重置开关', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { SettingsStore } = require('../lib/settings-store');
+  const fakeSafeStorage = {
+    isEncryptionAvailable: () => false,
+    encryptString: () => Buffer.from(''),
+    decryptString: () => '',
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingualens-test-'));
+  const filePath = path.join(dir, 'settings.json');
+  const store = new SettingsStore({ filePath, safeStorage: fakeSafeStorage });
+  store.save({ captureProtection: true });
+  const reopened = new SettingsStore({ filePath, safeStorage: fakeSafeStorage });
+  assert.equal(reopened.getRuntimeSettings().captureProtection, true);
+  reopened.save({});
+  assert.equal(reopened.getRuntimeSettings().captureProtection, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
