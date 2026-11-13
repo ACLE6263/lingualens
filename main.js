@@ -38,6 +38,9 @@ const startHidden = process.argv.includes(HIDDEN_STARTUP_FLAG);
 let captureWindow = null;
 let captureWindowLoadPromise = null;
 let captureStarting = false;
+let captureProcessing = false;
+let activeCaptureDisplay = null;
+let lastCaptureSelection = null;
 let fullScreenTranslationStarting = false;
 let resultWindow = null;
 let translationOverlayWindow = null;
@@ -48,9 +51,7 @@ let ocrService = null;
 let liveTranslationSession = null;
 let ttsService = null;
 let isQuitting = false;
-let activeHotkey = null;
-let activeInputHotkey = null;
-let activeFullScreenHotkey = null;
+const registeredHotkeys = new Map();
 let liveSkippedFrames = 0;
 let currentSelectionSignature = null;
 let currentSession = {
@@ -129,6 +130,7 @@ function ensureCaptureWindow(display) {
       if (captureWindow === window) {
         captureWindow = null;
         captureWindowLoadPromise = null;
+        activeCaptureDisplay = null;
       }
     });
     captureWindowLoadPromise = window.loadFile(path.join(__dirname, 'src', 'capture.html'))
@@ -150,6 +152,7 @@ function ensureCaptureWindow(display) {
 }
 
 function hideCaptureWindow() {
+  activeCaptureDisplay = null;
   if (captureWindow && !captureWindow.isDestroyed()) captureWindow.hide();
 }
 function placeResultWindow(selectionBounds) {
@@ -408,8 +411,7 @@ function prepareImageForOcr(image) {
   return scaled.toDataURL();
 }
 
-async function captureRegion(bounds) {
-  const display = screen.getDisplayNearestPoint(getBoundsCenter(bounds));
+async function captureRegionImage(bounds, display) {
   const screenshot = await captureDisplayWithoutOwnWindows(display, bounds);
   const screenshotSize = screenshot.getSize();
   const scaleX = screenshotSize.width / display.bounds.width;
@@ -424,9 +426,14 @@ async function captureRegion(bounds) {
     screenshotSize.height,
     Math.ceil((bounds.y + bounds.height - display.bounds.y) * scaleY),
   );
-  if (right <= left || bottom <= top) throw new Error('实时翻译区域已超出当前屏幕。');
+  if (right <= left || bottom <= top) throw new Error('翻译区域已超出当前屏幕。');
 
-  const image = screenshot.crop({ x: left, y: top, width: right - left, height: bottom - top });
+  return screenshot.crop({ x: left, y: top, width: right - left, height: bottom - top });
+}
+
+async function captureRegion(bounds) {
+  const display = screen.getDisplayNearestPoint(getBoundsCenter(bounds));
+  const image = await captureRegionImage(bounds, display);
   return {
     imageDataUrl: prepareImageForOcr(image),
     previewImageDataUrl: image.toDataURL(),
@@ -439,7 +446,7 @@ function stopLiveTranslation() {
 }
 
 async function startCapture() {
-  if (fullScreenTranslationStarting) return;
+  if (fullScreenTranslationStarting || captureProcessing) return;
   if (captureWindow && !captureWindow.isDestroyed() && captureWindow.isVisible()) {
     captureWindow.focus();
     return;
@@ -464,9 +471,13 @@ async function startCapture() {
       captureDisplayWithoutOwnWindows(display, display.bounds),
     ]);
     const screenshot = createCapturePreviewDataUrl(screenshotImage);
+    activeCaptureDisplay = display;
     window.webContents.send('capture:init', {
       screenshot,
       displayBounds: display.bounds,
+      previousSelection: lastCaptureSelection?.displayId === display.id
+        ? lastCaptureSelection.selection
+        : null,
     });
     sendResultState({
       phase: 'selecting',
@@ -539,7 +550,7 @@ async function recognizeAndTranslate(imageDataUrl, settings, { onProgress, onTra
 }
 
 async function startFullScreenTranslation() {
-  if (fullScreenTranslationStarting || captureStarting) return;
+  if (fullScreenTranslationStarting || captureStarting || captureProcessing) return;
 
   fullScreenTranslationStarting = true;
   let displayBounds = null;
@@ -654,7 +665,7 @@ async function startFullScreenTranslation() {
     fullScreenTranslationStarting = false;
   }
 }
-async function processCapture(payload) {
+async function finishCapture(payload, display) {
   if (!payload?.imageDataUrl || !payload?.bounds) throw new Error('截取区域无效。');
   hideCaptureWindow();
   stopLiveTranslation();
@@ -662,17 +673,67 @@ async function processCapture(payload) {
 
   const capturedImage = nativeImage.createFromDataURL(payload.imageDataUrl);
   if (capturedImage.isEmpty()) throw new Error('截取区域图像无效。');
-  currentSelectionSignature = createImageSignature(capturedImage);
+  lastCaptureSelection = {
+    displayId: display.id,
+    selection: {
+      x: payload.bounds.x - display.bounds.x,
+      y: payload.bounds.y - display.bounds.y,
+      width: payload.bounds.width,
+      height: payload.bounds.height,
+    },
+  };
+  captureProcessing = true;
+  try {
+    await processCapture(capturedImage, payload.bounds, payload.imageDataUrl);
+  } finally {
+    captureProcessing = false;
+  }
+}
+
+async function retranslateLastCapture() {
+  if (captureStarting || captureProcessing || fullScreenTranslationStarting) return;
+  if (!lastCaptureSelection) throw new Error('请先框选一次需要翻译的区域。');
+
+  const { displayId, selection } = lastCaptureSelection;
+  const display = screen.getAllDisplays().find(({ id }) => id === displayId);
+  if (!display || selection.x + selection.width > display.bounds.width
+    || selection.y + selection.height > display.bounds.height) {
+    throw new Error('上次框选的区域已不在可用的显示器范围内，请重新框选。');
+  }
+
+  const bounds = {
+    ...selection,
+    x: display.bounds.x + selection.x,
+    y: display.bounds.y + selection.y,
+  };
+  captureProcessing = true;
+  try {
+    const captureWasVisible = Boolean(activeCaptureDisplay);
+    hideCaptureWindow();
+    stopLiveTranslation();
+    closeTranslationOverlay();
+    if (captureWasVisible) {
+      await new Promise((resolve) => setTimeout(resolve, OWN_WINDOW_HIDE_SETTLE_MS));
+    }
+    const image = await captureRegionImage(bounds, display);
+    await processCapture(image, bounds, image.toDataURL());
+  } finally {
+    captureProcessing = false;
+  }
+}
+
+async function processCapture(image, bounds, imageDataUrl) {
+  currentSelectionSignature = createImageSignature(image);
   liveSkippedFrames = 0;
 
-  placeResultWindow(payload.bounds);
+  placeResultWindow(bounds);
   resultWindow.show();
   resultWindow.focus();
   sendResultState({
     phase: 'ocr',
     message: '正在识别文字…',
-    imageDataUrl: payload.imageDataUrl,
-    selectionBounds: payload.bounds,
+    imageDataUrl,
+    selectionBounds: bounds,
     progress: 0,
     sourceText: '',
     translatedText: '',
@@ -691,7 +752,7 @@ async function processCapture(payload) {
   const settings = settingsStore.getRuntimeSettings();
   try {
     const result = await recognizeAndTranslate(
-      prepareImageForOcr(capturedImage),
+      prepareImageForOcr(image),
       settings,
       {
         onProgress: (progress) => sendResultState({
@@ -863,24 +924,6 @@ function showInputPanel() {
   ttsService?.warmUp();
   panel.show();
   panel.focus();
-}
-
-function registerInputPanelShortcut(accelerator) {
-  if (activeInputHotkey) globalShortcut.unregister(activeInputHotkey);
-  let registered = false;
-  try {
-    registered = globalShortcut.register(accelerator, () => {
-      try {
-        showInputPanel();
-      } catch (error) {
-        showFatalError(error);
-      }
-    });
-  } catch {
-    registered = false;
-  }
-  if (registered) activeInputHotkey = accelerator;
-  return registered;
 }
 
 function showTranslationOverlay(bounds = currentSession.selectionBounds, payload = getOverlayPayload()) {
@@ -1160,32 +1203,34 @@ function configureAutoLaunch() {
 // 拒绝保存，避免 globalShortcut.register 同步抛异常破坏回滚与下次启动。
 // 规则实现见 lib/accelerator.js（可单测）。
 
-function registerFullScreenTranslationShortcut(accelerator) {
-  if (activeFullScreenHotkey) globalShortcut.unregister(activeFullScreenHotkey);
-  let registered = false;
+const hotkeys = [
+  { key: 'hotkey', label: '截取翻译', run: startCapture },
+  { key: 'fullScreenHotkey', label: '全屏翻译', run: startFullScreenTranslation },
+  { key: 'inputHotkey', label: '输入翻译', run: showInputPanel },
+  { key: 'retranslateHotkey', label: '重译上次选区', run: retranslateLastCapture },
+];
+
+function registerHotkey({ key, run }, accelerator) {
   try {
-    registered = globalShortcut.register(accelerator, () => {
-      startFullScreenTranslation().catch(showFatalError);
-    });
+    if (!globalShortcut.register(accelerator, async () => {
+      try {
+        await run();
+      } catch (error) {
+        showFatalError(error);
+      }
+    })) return false;
   } catch {
-    registered = false;
+    return false;
   }
-  if (registered) activeFullScreenHotkey = accelerator;
-  return registered;
+  registeredHotkeys.set(key, accelerator);
+  return true;
 }
 
-function registerCaptureShortcut(accelerator) {
-  if (activeHotkey) globalShortcut.unregister(activeHotkey);
-  let registered = false;
-  try {
-    registered = globalShortcut.register(accelerator, () => {
-      startCapture().catch(showFatalError);
-    });
-  } catch {
-    registered = false;
-  }
-  if (registered) activeHotkey = accelerator;
-  return registered;
+function unregisterHotkey(key) {
+  const accelerator = registeredHotkeys.get(key);
+  if (!accelerator) return;
+  globalShortcut.unregister(accelerator);
+  registeredHotkeys.delete(key);
 }
 
 function showFatalError(error) {
@@ -1215,13 +1260,19 @@ function reportHotkeyFailure(actionName, accelerator) {
 }
 
 function createTray() {
-  const settings = settingsStore.getRuntimeSettings();
   const icon = nativeImage.createFromBuffer(createTrayIconBuffer()).resize({ width: 20, height: 20 });
   tray = new Tray(icon);
   tray.setToolTip('LinguaLens 屏幕翻译');
+  updateTrayMenu();
+  tray.on('double-click', () => startCapture().catch(showFatalError));
+}
+
+function updateTrayMenu() {
+  const settings = settingsStore.getRuntimeSettings();
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `全屏翻译 (${settings.fullScreenHotkey})`, click: () => startFullScreenTranslation().catch(showFatalError) },
     { label: `截取并翻译 (${settings.hotkey})`, click: () => startCapture().catch(showFatalError) },
+    { label: `重译上次选区 (${settings.retranslateHotkey})`, click: () => retranslateLastCapture().catch(showFatalError) },
     { label: `输入翻译（中 → 英） (${settings.inputHotkey})`, click: () => showInputPanel() },
     { label: '打开 LinguaLens', click: () => createResultWindow().show() },
     { type: 'separator' },
@@ -1233,11 +1284,13 @@ function createTray() {
       },
     },
   ]));
-  tray.on('double-click', () => startCapture().catch(showFatalError));
 }
 
 function registerIpcHandlers() {
-  ipcMain.on('capture:complete', (_event, payload) => processCapture(payload).catch(showFatalError));
+  ipcMain.on('capture:complete', (event, payload) => {
+    if (event.sender !== captureWindow?.webContents || !activeCaptureDisplay) return;
+    finishCapture(payload, activeCaptureDisplay).catch(showFatalError);
+  });
   ipcMain.on('capture:cancel', () => {
     hideCaptureWindow();
     sendResultState({
@@ -1282,35 +1335,42 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('settings:get', () => settingsStore.getPublicSettings());
   ipcMain.handle('settings:save', (_event, nextSettings) => {
-    const hotkeyFields = [
-      ['截取翻译快捷键', nextSettings?.hotkey],
-      ['全屏翻译快捷键', nextSettings?.fullScreenHotkey],
-      ['输入翻译快捷键', nextSettings?.inputHotkey],
-    ];
-    for (const [label, value] of hotkeyFields) {
+    for (const { key, label } of hotkeys) {
+      const value = nextSettings?.[key];
       if (value !== undefined && !isValidAccelerator(value)) {
-        return { ok: false, error: `${label}「${value}」格式无效：需要"修饰键+按键"的组合，例如 Ctrl+Alt+J。` };
+        return { ok: false, error: `${label}快捷键「${value}」格式无效：需要"修饰键+按键"的组合，例如 Ctrl+Alt+J。` };
       }
     }
-    const previous = settingsStore.getRuntimeSettings();
-    const saved = settingsStore.save(nextSettings);
+
+    const changedHotkeys = hotkeys
+      .filter(({ key }) => nextSettings?.[key] !== undefined)
+      .map((hotkey) => ({
+        ...hotkey,
+        previous: registeredHotkeys.get(hotkey.key),
+        accelerator: String(nextSettings[hotkey.key]).trim(),
+      }))
+      .filter(({ previous, accelerator }) => previous !== accelerator);
+    for (const { key } of changedHotkeys) unregisterHotkey(key);
+    let saved;
+    try {
+      for (const hotkey of changedHotkeys) {
+        if (!registerHotkey(hotkey, hotkey.accelerator)) {
+          return { ok: false, error: `${hotkey.label}快捷键 ${hotkey.accelerator} 无法注册，请换一个组合。` };
+        }
+      }
+      saved = settingsStore.save(nextSettings);
+    } finally {
+      if (!saved) {
+        for (const { key } of changedHotkeys) unregisterHotkey(key);
+        for (const hotkey of changedHotkeys) {
+          if (hotkey.previous && !registerHotkey(hotkey, hotkey.previous)) {
+            reportHotkeyFailure(hotkey.label, hotkey.previous);
+          }
+        }
+      }
+    }
     applyAllContentProtection();
-    let failure = null;
-    if (!registerCaptureShortcut(saved.hotkey)) {
-      failure = `截取翻译快捷键 ${saved.hotkey} 无法注册，请换一个组合。`;
-    } else if (!registerFullScreenTranslationShortcut(saved.fullScreenHotkey)) {
-      failure = `全屏翻译快捷键 ${saved.fullScreenHotkey} 无法注册，请换一个组合。`;
-    } else if (!registerInputPanelShortcut(saved.inputHotkey)) {
-      failure = `输入翻译快捷键 ${saved.inputHotkey} 无法注册，请换一个组合。`;
-    }
-    if (failure) {
-      settingsStore.save(previous);
-      applyAllContentProtection();
-      registerCaptureShortcut(previous.hotkey);
-      registerFullScreenTranslationShortcut(previous.fullScreenHotkey);
-      registerInputPanelShortcut(previous.inputHotkey);
-      return { ok: false, error: failure };
-    }
+    if (changedHotkeys.length) updateTrayMenu();
     if (liveTranslationSession?.isRunning()) {
       liveTranslationSession.changeThreshold = saved.frameChangeThreshold;
       liveTranslationSession.setIntervalMs(saved.liveIntervalMs);
@@ -1353,14 +1413,9 @@ if (!hasSingleInstanceLock) {
     registerIpcHandlers();
     createTray();
     const settings = settingsStore.getRuntimeSettings();
-    if (!registerFullScreenTranslationShortcut(settings.fullScreenHotkey)) {
-      reportHotkeyFailure('全屏翻译', settings.fullScreenHotkey);
-    }
-    if (!registerCaptureShortcut(settings.hotkey)) {
-      reportHotkeyFailure('截取翻译', settings.hotkey);
-    }
-    if (!registerInputPanelShortcut(settings.inputHotkey)) {
-      reportHotkeyFailure('输入翻译', settings.inputHotkey);
+    for (const hotkey of hotkeys) {
+      const accelerator = settings[hotkey.key];
+      if (!registerHotkey(hotkey, accelerator)) reportHotkeyFailure(hotkey.label, accelerator);
     }
     const window = createResultWindow();
     const resultReady = new Promise((resolve) => window.once('ready-to-show', resolve));

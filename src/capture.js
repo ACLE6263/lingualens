@@ -1,16 +1,26 @@
 ﻿const image = document.querySelector('#screenImage');
 const canvas = document.querySelector('#selectionCanvas');
 const sizeBadge = document.querySelector('#sizeBadge');
+const reuseHint = document.querySelector('#reuseHint');
 const context = canvas.getContext('2d');
 
 let displayBounds = null;
+let previousSelection = null;
 let startPoint = null;
 let currentPoint = null;
-let dragging = false;
+let dragPointerId = null;
+let ready = false;
+
+function reusableSelection() {
+  if (!previousSelection) return null;
+  const { x, y, width, height } = previousSelection;
+  return x + width <= window.innerWidth && y + height <= window.innerHeight ? previousSelection : null;
+}
 
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  reuseHint.hidden = !reusableSelection();
   drawSelection();
 }
 
@@ -28,7 +38,7 @@ function drawSelection() {
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = 'rgba(7, 11, 18, 0.48)';
   context.fillRect(0, 0, canvas.width, canvas.height);
-  const selection = normalizedSelection();
+  const selection = normalizedSelection() ?? reusableSelection();
   if (!selection || selection.width < 1 || selection.height < 1) return;
 
   context.clearRect(selection.x, selection.y, selection.width, selection.height);
@@ -54,7 +64,8 @@ function pointFromEvent(event) {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
-  dragging = true;
+  if (!ready || event.button !== 0 || dragPointerId !== null) return;
+  dragPointerId = event.pointerId;
   startPoint = pointFromEvent(event);
   currentPoint = startPoint;
   canvas.setPointerCapture(event.pointerId);
@@ -63,7 +74,7 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 canvas.addEventListener('pointermove', (event) => {
-  if (!dragging) return;
+  if (event.pointerId !== dragPointerId) return;
   currentPoint = pointFromEvent(event);
   const selection = normalizedSelection();
   sizeBadge.textContent = `${Math.round(selection.width)} × ${Math.round(selection.height)}`;
@@ -72,19 +83,15 @@ canvas.addEventListener('pointermove', (event) => {
   drawSelection();
 });
 
-canvas.addEventListener('pointerup', (event) => {
-  if (!dragging) return;
-  dragging = false;
-  currentPoint = pointFromEvent(event);
-  const selection = normalizedSelection();
-  if (selection.width < 8 || selection.height < 8) {
-    startPoint = null;
-    currentPoint = null;
-    sizeBadge.hidden = true;
-    drawSelection();
-    return;
-  }
+function resetDrag() {
+  dragPointerId = null;
+  startPoint = null;
+  currentPoint = null;
+  sizeBadge.hidden = true;
+}
 
+function submitSelection(selection) {
+  ready = false;
   const scaleX = image.naturalWidth / window.innerWidth;
   const scaleY = image.naturalHeight / window.innerHeight;
   const cropCanvas = document.createElement('canvas');
@@ -110,14 +117,48 @@ canvas.addEventListener('pointerup', (event) => {
       height: selection.height,
     },
   });
+}
+
+canvas.addEventListener('pointerup', (event) => {
+  if (!ready) return;
+  if (dragPointerId === null) {
+    const selection = reusableSelection();
+    if (event.button === 2 && selection) submitSelection(selection);
+    return;
+  }
+  if (event.pointerId !== dragPointerId) return;
+  currentPoint = pointFromEvent(event);
+  const selection = normalizedSelection();
+  resetDrag();
+  if (event.button === 0 && selection.width >= 8 && selection.height >= 8) {
+    submitSelection(selection);
+  } else {
+    drawSelection();
+  }
 });
 
+canvas.addEventListener('lostpointercapture', (event) => {
+  if (event.pointerId !== dragPointerId) return;
+  resetDrag();
+  drawSelection();
+});
+
+window.addEventListener('contextmenu', (event) => event.preventDefault());
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') window.linguaLens.cancelCapture();
+  if (event.key !== 'Escape') return;
+  ready = false;
+  displayBounds = null;
+  window.linguaLens.cancelCapture();
 });
 window.addEventListener('resize', resizeCanvas);
 window.linguaLens.onCaptureInit((payload) => {
+  ready = false;
+  resetDrag();
   displayBounds = payload.displayBounds;
-  image.addEventListener('load', resizeCanvas, { once: true });
+  previousSelection = payload.previousSelection;
+  resizeCanvas();
   image.src = payload.screenshot;
+  image.decode().then(() => {
+    if (displayBounds === payload.displayBounds) ready = true;
+  }).catch(() => {});
 });

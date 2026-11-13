@@ -4,7 +4,7 @@ LinguaLens 是一款面向 Windows 的屏幕 OCR 翻译工具。按下全局快�
 
 ## 核心能力
 
-- 单一路径：快捷键 → 框选 → OCR → 翻译。
+- 框选翻译与上次选区重译，均从当前屏幕截图进行 OCR 和翻译。
 - 截图默认只在内存中处理，不写入历史文件。
 - 按 OCR 行坐标把译文覆盖回原始屏幕区域。
 - 固定区域实时翻译，仅在画面发生明显变化时重新 OCR 和翻译。
@@ -17,11 +17,14 @@ LinguaLens 是一款面向 Windows 的屏幕 OCR 翻译工具。按下全局快�
 
 ```powershell
 npm install
-npm start
+npx --no-install electron .
 ```
 
-默认快捷键：截取翻译 `Alt+Shift+T`，屏幕翻译 `Shift+Alt+G`。两组快捷键都可以在“设置”中自定义，且不能使用相同组合。
+默认快捷键：截取翻译 `Alt+Shift+T`，全屏翻译 `Shift+Alt+G`，输入翻译 `Shift+Alt+R`，重译上次选区 `Shift+Alt+V`。每组都可以在“设置”中自定义，需使用不同的组合。
 
+打开截取翻译后，左键拖动框选新区域，右键重新识别并翻译同一显示器上次框选位置的当前内容。右键可以点在选区外，选区在退出程序后清除。
+
+按 `Shift+Alt+V` 可直接重新截取并翻译上次框选的区域。可在“设置”中修改“重译上次选区快捷键”。
 
 第一次 OCR 会下载所选语言模型，之后从本地缓存读取。默认语言包包含简体中文、英语、日语和韩语。
 
@@ -50,13 +53,12 @@ npm start
 ## 验证与打包
 
 ```powershell
-npm run check
 npm test
 npx electron scripts/smoke-ocr.js
-npm run dist
+npx --no-install electron-builder --win portable --x64 --publish never
 ```
 
-打包结果位于 `dist` 目录。
+打包结果位于项目上一级的 `dist` 目录。
 
 ## 隐私边界
 
@@ -115,7 +117,7 @@ GitHub 同类项目调研见 `docs/github-similar-projects.md`。
 git clone https://github.com/ACLE6263/lingualens.git
 cd lingualens
 npm install
-npm start
+npx --no-install electron .
 ```
 
 源码运行同样会注册开机自启，指向 `electron.exe + 项目目录`；移动或删除项目目录前请先退出程序并移除自启：`reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LinguaLens /f`。
@@ -158,3 +160,9 @@ npm start
 - **默认关闭防截屏保护**：改为截图瞬间临时隐藏与截取目标重叠的自身窗口（约 80ms），OCR 同样不会读到自己的界面，且不影响任何录屏软件。实时翻译时覆盖层每个刷新周期会短暂闪现一次底下的原文，属该方案的正常代价。
 - **新增可选开关**：设置中可显式开启「窗口防截屏保护」，恢复系统级隐藏行为（同时提示与录屏软件的冲突）。
 - 覆盖层、结果窗口与输入面板三处行为一致；保存设置即时生效，无需重启。
+
+### v0.1.9：重译上次选区
+
+- 在框选界面右键，可重译同一显示器上次框选位置的当前内容。
+- 默认按 `Shift+Alt+V` 直接重新截取并翻译上次选区，支持在设置中修改快捷键。
+- 选区保留到程序退出。重新打开程序后，先左键框选一次即可使用。

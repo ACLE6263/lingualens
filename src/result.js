@@ -6,6 +6,7 @@ const elements = {
   copyButton: document.querySelector('#copyButton'),
   errorText: document.querySelector('#errorText'),
   hotkeyInput: document.querySelector('#hotkeyInput'),
+  retranslateHotkeyInput: document.querySelector('#retranslateHotkeyInput'),
   fullScreenHotkeyInput: document.querySelector('#fullScreenHotkeyInput'),
   inputHotkeyInput: document.querySelector('#inputHotkeyInput'),
   liveButton: document.querySelector('#liveButton'),
@@ -127,6 +128,7 @@ function setProviderFields(provider) {
 async function openSettings() {
   settings = await window.linguaLens.getSettings();
   elements.hotkeyInput.value = settings.hotkey;
+  elements.retranslateHotkeyInput.value = settings.retranslateHotkey;
   elements.fullScreenHotkeyInput.value = settings.fullScreenHotkey ?? 'Shift+Alt+G';
   elements.inputHotkeyInput.value = settings.inputHotkey ?? 'Shift+Alt+R';
   elements.ocrLanguagesInput.value = settings.ocrLanguages;
@@ -204,6 +206,7 @@ elements.settingsForm.addEventListener('submit', async (event) => {
   try {
     const result = await window.linguaLens.saveSettings({
       hotkey: elements.hotkeyInput.value,
+      retranslateHotkey: elements.retranslateHotkeyInput.value,
       fullScreenHotkey: elements.fullScreenHotkeyInput.value,
       inputHotkey: elements.inputHotkeyInput.value,
       ocrLanguages: elements.ocrLanguagesInput.value,
