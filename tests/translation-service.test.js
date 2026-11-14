@@ -1,5 +1,7 @@
 ﻿const test = require('node:test');
 const assert = require('node:assert/strict');
+const { createServer } = require('node:http');
+const { once } = require('node:events');
 
 const {
   chunkText,
@@ -8,6 +10,7 @@ const {
   parseGoogleResponse,
   parseMyMemoryResponse,
   resolveChatCompletionsUrl,
+  translateText,
 } = require('../lib/translation-service');
 
 test('detectLanguage recognizes common screen text scripts', () => {
@@ -39,6 +42,20 @@ test('parseMyMemoryResponse validates successful responses', () => {
   assert.equal(parseMyMemoryResponse({ responseStatus: 200, responseData: { translatedText: '你好' } }), '你好');
 });
 
+test('parseMyMemoryResponse strips XLIFF inline tags from translations', () => {
+  const payload = { responseStatus: 200, responseData: { translatedText: '<ex id="_1"/><g id="2">We are together.</g>' } };
+  assert.equal(parseMyMemoryResponse(payload), 'We are together.');
+});
+
+test('parseMyMemoryResponse keeps legitimate angle-bracket text intact', () => {
+  const payload = { responseStatus: 200, responseData: { translatedText: 'use <video> and </audio> tags' } };
+  assert.equal(parseMyMemoryResponse(payload), 'use <video> and </audio> tags');
+});
+
+test('parseMyMemoryResponse rejects tag-only translations', () => {
+  assert.throws(() => parseMyMemoryResponse({ responseStatus: 200, responseData: { translatedText: '<ex id="_1"/>' } }));
+});
+
 
 test('parseGoogleClients5Response joins segments and reads detected language', () => {
   const result = parseGoogleClients5Response([['The weather is nice', 'zh-CN']]);
@@ -54,4 +71,28 @@ test('parseGoogleClients5Response joins multi-segment payloads', () => {
 test('parseGoogleClients5Response rejects invalid payloads', () => {
   assert.throws(() => parseGoogleClients5Response('nope'));
   assert.throws(() => parseGoogleClients5Response([['', 'en']]));
+});
+
+test('translations are cached separately for different endpoints and credentials', async (t) => {
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests += 1;
+    request.resume();
+    const content = `${request.url} ${request.headers.authorization}`;
+    response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  });
+  server.listen(0, '127.0.0.1');
+  t.after(() => server.close());
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const translate = (endpoint, apiKey) => translateText('Cache isolation', {
+    translationProvider: 'openai',
+    targetLanguage: 'zh-CN',
+    openai: { baseUrl: base + endpoint, model: 'same-model', apiKey },
+  });
+  assert.equal((await translate('/first', 'test-a')).text, '/first/chat/completions Bearer test-a');
+  assert.equal((await translate('/second', 'test-a')).text, '/second/chat/completions Bearer test-a');
+  assert.equal((await translate('/second', 'test-b')).text, '/second/chat/completions Bearer test-b');
+  await translate('/second', 'test-b');
+  assert.equal(requests, 3);
 });

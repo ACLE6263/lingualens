@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('linguaLens', {
   startFullScreenTranslation: () => ipcRenderer.invoke('app:full-screen-translate'),
   retryTranslation: (sourceText) => ipcRenderer.invoke('translation:retry', sourceText),
   toggleLiveTranslation: () => ipcRenderer.invoke('live:toggle'),
-  inputPanelTranslate: (text) => ipcRenderer.invoke('input-panel:translate', text),
+  inputPanelTranslate: (text, language) => ipcRenderer.invoke('input-panel:translate', text, language),
   speakTranslation: (payload) => ipcRenderer.invoke('tts:speak', payload),
   stopSpeaking: () => ipcRenderer.invoke('tts:stop'),
   onSpeakingState: (callback) => subscribe('tts:state', callback),

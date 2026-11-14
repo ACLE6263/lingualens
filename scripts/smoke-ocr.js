@@ -49,7 +49,7 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const image = await window.webContents.capturePage();
     service = new OcrService({ cachePath: path.join(app.getPath('userData'), 'ocr-cache-smoke') });
-    const result = await service.recognize(image.toDataURL(), 'eng', (progress) => {
+    const result = await service.recognize(image.toPNG(), 'eng', (progress) => {
       if (progress.value === 1) safeLog(progress.label);
     });
     safeLog(JSON.stringify(result));

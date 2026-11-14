@@ -16,6 +16,8 @@ let debounceTimer = null;
 let lastTranslation = '';
 let settings = null;
 let isSpeaking = false;
+let speechStarting = false;
+let languageSaveSequence = 0;
 
 const SPEAK_IDLE_LABEL = '朗读文本';
 const SPEAK_ACTIVE_LABEL = '停止朗读';
@@ -35,7 +37,7 @@ function updateLabels() {
 }
 
 function updateSpeakAvailability() {
-  elements.speakButton.disabled = !lastTranslation;
+  elements.speakButton.disabled = !lastTranslation || speechStarting;
 }
 
 function renderSpeaking(speaking) {
@@ -47,35 +49,34 @@ function renderSpeaking(speaking) {
 // 只在真的在朗读时才发停止指令：空闲时调用会杀掉已预热的语音进程，
 // 下次点朗读又得等一次冷启动。
 function stopSpeechIfNeeded() {
-  if (isSpeaking) window.linguaLens.stopSpeaking();
+  if (isSpeaking || speechStarting) window.linguaLens.stopSpeaking();
 }
 
-function resetPanel() {
+function invalidateTranslation() {
   translateSequence += 1;
   clearTimeout(debounceTimer);
   stopSpeechIfNeeded();
+  speechStarting = false;
   renderSpeaking(false);
-  elements.sourceInput.value = '';
-  elements.resultText.textContent = '等待输入…';
+  lastTranslation = '';
   elements.resultText.classList.add('empty');
   elements.providerText.textContent = '';
-  elements.statusText.textContent = '输入后自动翻译';
   elements.copyButton.disabled = true;
   elements.speakButton.title = '朗读译文';
-  lastTranslation = '';
   updateSpeakAvailability();
 }
 
+function resetPanel() {
+  invalidateTranslation();
+  elements.sourceInput.value = '';
+  elements.resultText.textContent = '等待输入…';
+  elements.statusText.textContent = '输入后自动翻译';
+}
+
 function renderWaiting() {
-  translateSequence += 1;
-  stopSpeechIfNeeded();
-  renderSpeaking(false);
+  invalidateTranslation();
   elements.resultText.textContent = '正在翻译…';
-  elements.resultText.classList.add('empty');
-  elements.providerText.textContent = '';
   elements.statusText.textContent = '正在翻译…';
-  elements.copyButton.disabled = true;
-  updateSpeakAvailability();
 }
 
 async function translateNow() {
@@ -88,7 +89,7 @@ async function translateNow() {
   renderWaiting();
   const sequence = translateSequence;
   try {
-    const result = await window.linguaLens.inputPanelTranslate(text);
+    const result = await window.linguaLens.inputPanelTranslate(text, elements.targetLanguageSelect.value);
     if (sequence !== translateSequence) return;
     lastTranslation = result.text;
     elements.resultText.textContent = result.text;
@@ -111,11 +112,11 @@ async function translateNow() {
 }
 
 elements.sourceInput.addEventListener('input', () => {
-  clearTimeout(debounceTimer);
   if (!elements.sourceInput.value.trim()) {
     resetPanel();
     return;
   }
+  renderWaiting();
   debounceTimer = setTimeout(translateNow, 500);
 });
 
@@ -127,7 +128,7 @@ elements.sourceInput.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !event.isComposing) window.linguaLens.hideInputPanel();
+  if (event.key === 'Escape' && !event.isComposing) hidePanel();
 });
 
 elements.copyButton.addEventListener('click', () => {
@@ -141,14 +142,17 @@ elements.speakButton.addEventListener('click', async () => {
     await window.linguaLens.stopSpeaking();
     return;
   }
-  if (!lastTranslation) return;
+  if (!lastTranslation || speechStarting) return;
   // 朗读启动期间禁止重复点击，避免叠加两条语音。
-  elements.speakButton.disabled = true;
+  speechStarting = true;
+  const sequence = translateSequence;
+  updateSpeakAvailability();
   try {
     const result = await window.linguaLens.speakTranslation({
       text: lastTranslation,
       language: elements.targetLanguageSelect.value,
     });
+    if (sequence !== translateSequence) return;
     if (!result?.ok) {
       elements.statusText.textContent = `朗读失败：${result?.error ?? '未知错误'}`;
       renderSpeaking(false);
@@ -159,14 +163,19 @@ elements.speakButton.addEventListener('click', async () => {
       ? `朗读中 · ${result.voice}`
       : `未安装${selectedLanguageName()}语音，改用 ${result.voice} 朗读`;
   } catch (error) {
+    if (sequence !== translateSequence) return;
     elements.statusText.textContent = `朗读失败：${error.message ?? error}`;
     renderSpeaking(false);
   } finally {
-    updateSpeakAvailability();
+    if (sequence === translateSequence) {
+      speechStarting = false;
+      updateSpeakAvailability();
+    }
   }
 });
 
 window.linguaLens.onSpeakingState((state) => {
+  if (!lastTranslation) return;
   renderSpeaking(Boolean(state?.speaking));
   if (state?.speaking) {
     if (state.voice) elements.speakButton.title = `朗读译文（语音：${state.voice}）`;
@@ -181,33 +190,42 @@ window.linguaLens.onSpeakingState((state) => {
 elements.targetLanguageSelect.addEventListener('change', async () => {
   const language = elements.targetLanguageSelect.value;
   const previous = settings?.inputPanelTargetLanguage ?? 'en';
+  const sequence = ++languageSaveSequence;
   updateLabels();
+  if (elements.sourceInput.value.trim()) renderWaiting();
   try {
-    const current = await window.linguaLens.getSettings();
     const result = await window.linguaLens.saveSettings({
-      ...current,
       inputPanelTargetLanguage: language,
     });
-    if (!result.ok) {
-      elements.targetLanguageSelect.value = previous;
-      updateLabels();
-      elements.statusText.textContent = result.error ?? '保存失败';
-      return;
-    }
+    if (sequence !== languageSaveSequence) return;
+    if (!result.ok) throw new Error(result.error ?? '保存失败');
     settings = result.settings;
     if (elements.sourceInput.value.trim()) translateNow();
   } catch (error) {
+    if (sequence !== languageSaveSequence) return;
+    elements.targetLanguageSelect.value = previous;
+    updateLabels();
+    if (elements.sourceInput.value.trim()) {
+      invalidateTranslation();
+      elements.resultText.textContent = '保存目标语言失败。';
+    }
     elements.statusText.textContent = error.message ?? String(error);
   }
 });
 
 window.linguaLens.getSettings().then((value) => {
+  if (languageSaveSequence !== 0) return;
   settings = value;
   elements.targetLanguageSelect.value = value.inputPanelTargetLanguage ?? 'en';
   updateLabels();
 });
 
-elements.closeButton.addEventListener('click', () => window.linguaLens.hideInputPanel());
+function hidePanel() {
+  resetPanel();
+  window.linguaLens.hideInputPanel();
+}
+
+elements.closeButton.addEventListener('click', hidePanel);
 
 window.linguaLens.onInputPanelShown(resetPanel);
 elements.sourceInput.focus();

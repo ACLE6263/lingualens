@@ -245,7 +245,7 @@ elements.targetLanguageSelect.addEventListener('change', async () => {
   const languageName = elements.targetLanguageSelect.selectedOptions[0]?.textContent ?? language;
   try {
     const current = await window.linguaLens.getSettings();
-    const result = await window.linguaLens.saveSettings({ ...current, targetLanguage: language });
+    const result = await window.linguaLens.saveSettings({ targetLanguage: language });
     if (!result.ok) {
       elements.targetLanguageSelect.value = current.targetLanguage;
       toast(result.error ?? '保存失败');

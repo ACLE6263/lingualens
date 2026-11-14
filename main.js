@@ -18,6 +18,7 @@ const {
 } = require('electron');
 
 const { computeBlockBackgrounds } = require('./lib/block-background');
+const { getForegroundCaptureBounds } = require('./lib/capture-bounds');
 const { createFrameSignature } = require('./lib/frame-signature');
 const { preprocessBgraBitmap } = require('./lib/image-preprocess');
 const { isValidAccelerator } = require('./lib/accelerator');
@@ -243,50 +244,34 @@ function getBoundsCenter(bounds) {
 }
 
 
-// 全屏翻译只针对前台窗口：用 Win32 记录触发时刻的前台窗口矩形（物理像素），
-// 过滤掉桌面图标、便签等窗口外噪声。PowerShell 大多 DPI 感知不完整，
-// 因此同时保留物理坐标与按缩放换算的 DIP 坐标两种解释。
+// DWM 扩展边框使用物理像素，不受 PowerShell 进程的 DPI 感知设置影响。
 async function getForegroundWindowRect() {
   try {
     const script = [
-      "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out R r); public struct R { public int L; public int T; public int Rt; public int B; }' -Name W -Namespace N",
+      "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid); [DllImport(\"dwmapi.dll\")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out R r, int size); public struct R { public int L; public int T; public int Rt; public int B; }' -Name W -Namespace N",
       '$h = [N.W]::GetForegroundWindow()',
+      '$owner = [uint32]0',
+      '[N.W]::GetWindowThreadProcessId($h, [ref]$owner) | Out-Null',
+      `if ($owner -eq ${process.pid}) { exit }`,
       '$r = New-Object N.W+R',
-      '[N.W]::GetWindowRect($h, [ref]$r) | Out-Null',
-      '"$($r.L),$($r.T),$($r.Rt),$($r.B)"',
+      'if ([N.W]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -eq 0) { "$($r.L),$($r.T),$($r.Rt),$($r.B)" }',
     ].join('; ');
     const output = await new Promise((resolve) => {
       const child = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '-'],
-        { encoding: 'utf8', timeout: 2500 }, (error, stdout) => resolve(String(stdout ?? '').trim()));
+        { encoding: 'utf8', timeout: 2500, windowsHide: true },
+        (error, stdout) => resolve(error ? '' : String(stdout ?? '').trim()));
       child.on('error', () => resolve(''));
+      child.stdin.on('error', () => resolve(''));
       child.stdin.end(script);
     });
     const parts = output.split(',').map(Number);
     if (parts.length === 4 && parts.every((v) => Number.isFinite(v)) && parts[2] > parts[0] && parts[3] > parts[1]) {
-      return { left: parts[0], top: parts[1], right: parts[2], bottom: parts[3] };
+      const [x, y, right, bottom] = parts;
+      return { x, y, width: right - x, height: bottom - y };
     }
   } catch {
   }
   return null;
-}
-
-// 块中心（DIP，屏幕坐标）是否落在前台窗口内。物理/虚拟两套坐标都试。
-function blockInForeground(block, displayBounds, scaleFactor, foregroundRect) {
-  if (!foregroundRect) return true;
-  const centerX = displayBounds.x + (block.relative.x + block.relative.width / 2) * displayBounds.width;
-  const centerY = displayBounds.y + (block.relative.y + block.relative.height / 2) * displayBounds.height;
-  const margin = 40;
-  const candidates = [
-    { left: foregroundRect.left, top: foregroundRect.top, right: foregroundRect.right, bottom: foregroundRect.bottom },
-    {
-      left: foregroundRect.left / scaleFactor,
-      top: foregroundRect.top / scaleFactor,
-      right: foregroundRect.right / scaleFactor,
-      bottom: foregroundRect.bottom / scaleFactor,
-    },
-  ];
-  return candidates.some((r) => centerX >= r.left - margin && centerX <= r.right + margin
-    && centerY >= r.top - margin && centerY <= r.bottom + margin);
 }
 
 // Windows 上 setContentProtection(true) 等价于 SetWindowDisplayAffinity(WDA_MONITOR)，
@@ -392,7 +377,7 @@ function preprocessImageForOcr(image) {
     height: size.height,
   });
   if (processed.isEmpty()) return null;
-  return processed.toDataURL();
+  return processed.toPNG();
 }
 
 function prepareImageForOcr(image) {
@@ -408,23 +393,26 @@ function prepareImageForOcr(image) {
     if (preprocessed) return preprocessed;
   } catch {
   }
-  return scaled.toDataURL();
+  return scaled.toPNG();
 }
 
-async function captureRegionImage(bounds, display) {
+async function captureRegionImage(bounds, display, insideOnly = false) {
   const screenshot = await captureDisplayWithoutOwnWindows(display, bounds);
   const screenshotSize = screenshot.getSize();
-  const scaleX = screenshotSize.width / display.bounds.width;
-  const scaleY = screenshotSize.height / display.bounds.height;
-  const left = Math.max(0, Math.floor((bounds.x - display.bounds.x) * scaleX));
-  const top = Math.max(0, Math.floor((bounds.y - display.bounds.y) * scaleY));
+  const displayBounds = display.bounds;
+  const scaleX = screenshotSize.width / displayBounds.width;
+  const scaleY = screenshotSize.height / displayBounds.height;
+  const roundStart = insideOnly ? Math.ceil : Math.floor;
+  const roundEnd = insideOnly ? Math.floor : Math.ceil;
+  const left = Math.max(0, roundStart((bounds.x - displayBounds.x) * scaleX));
+  const top = Math.max(0, roundStart((bounds.y - displayBounds.y) * scaleY));
   const right = Math.min(
     screenshotSize.width,
-    Math.ceil((bounds.x + bounds.width - display.bounds.x) * scaleX),
+    roundEnd((bounds.x + bounds.width - displayBounds.x) * scaleX),
   );
   const bottom = Math.min(
     screenshotSize.height,
-    Math.ceil((bounds.y + bounds.height - display.bounds.y) * scaleY),
+    roundEnd((bounds.y + bounds.height - displayBounds.y) * scaleY),
   );
   if (right <= left || bottom <= top) throw new Error('翻译区域已超出当前屏幕。');
 
@@ -435,8 +423,7 @@ async function captureRegion(bounds) {
   const display = screen.getDisplayNearestPoint(getBoundsCenter(bounds));
   const image = await captureRegionImage(bounds, display);
   return {
-    imageDataUrl: prepareImageForOcr(image),
-    previewImageDataUrl: image.toDataURL(),
+    image,
     signature: createImageSignature(image),
   };
 }
@@ -529,9 +516,9 @@ async function translateOcrResult(ocrResult, settings) {
   };
 }
 
-async function recognizeAndTranslate(imageDataUrl, settings, { onProgress, onTranslate } = {}) {
+async function recognizeAndTranslate(imageBuffer, settings, { onProgress, onTranslate } = {}) {
   const ocrResult = await ocrService.recognize(
-    imageDataUrl,
+    imageBuffer,
     settings.ocrLanguages,
     onProgress,
   );
@@ -553,19 +540,23 @@ async function startFullScreenTranslation() {
   if (fullScreenTranslationStarting || captureStarting || captureProcessing) return;
 
   fullScreenTranslationStarting = true;
-  let displayBounds = null;
-  let resultWindowWasVisible = false;
+  let captureBounds = null;
   try {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const foregroundRect = await getForegroundWindowRect();
+    if (!foregroundRect) throw new Error('无法确定前台窗口，请切换到要翻译的窗口后再试。');
+    captureBounds = getForegroundCaptureBounds(
+      display.bounds, screen.dipToScreenRect(null, display.bounds), foregroundRect,
+    );
+    if (!captureBounds) throw new Error('请把鼠标移到前台窗口所在的显示器后再试。');
+
     hideCaptureWindow();
     stopLiveTranslation();
     closeTranslationOverlay();
-    const cursor = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursor);
-    displayBounds = { ...display.bounds };
     sendResultState({
       phase: 'ocr',
       message: '正在进行全屏翻译…',
-      selectionBounds: displayBounds,
+      selectionBounds: captureBounds,
       progress: 0,
       sourceText: '',
       translatedText: '',
@@ -575,14 +566,9 @@ async function startFullScreenTranslation() {
       error: null,
     });
 
-    // 自己的结果窗口（含上一次截图的预览缩略图）不能出现在截图里，
-    // 否则 OCR 会读到套娃内容并产生覆盖块。
-    resultWindowWasVisible = Boolean(resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible());
-    if (resultWindowWasVisible) resultWindow.hide();
-    const foregroundRect = await getForegroundWindowRect();
-    const screenshot = await captureDisplayWithoutOwnWindows(display, display.bounds);
+    const screenshot = await captureRegionImage(captureBounds, display, true);
     const settings = settingsStore.getRuntimeSettings();
-    showFullScreenStatus(displayBounds, '正在识别屏幕文字…');
+    showFullScreenStatus(captureBounds, '正在识别屏幕文字…');
     const result = await recognizeAndTranslate(
       prepareImageForOcr(screenshot),
       settings,
@@ -593,7 +579,7 @@ async function startFullScreenTranslation() {
             message: progress.label,
             progress: progress.value,
           });
-          showFullScreenStatus(displayBounds, progress.label);
+          showFullScreenStatus(captureBounds, progress.label);
         },
         onTranslate: (ocrResult) => {
           sendResultState({
@@ -604,7 +590,7 @@ async function startFullScreenTranslation() {
             ocrLineCount: ocrResult.lines.length,
             progress: 1,
           });
-          showFullScreenStatus(displayBounds, '正在翻译屏幕文字…');
+          showFullScreenStatus(captureBounds, '正在翻译屏幕文字…');
         },
       },
     );
@@ -616,7 +602,7 @@ async function startFullScreenTranslation() {
       phase: result.sourceText ? 'complete' : 'empty',
       message: result.sourceText ? '全屏翻译完成' : '未识别到屏幕文字',
       imageDataUrl,
-      selectionBounds: displayBounds,
+      selectionBounds: captureBounds,
       progress: 1,
       sourceText: result.sourceText,
       translatedText: result.translatedText,
@@ -630,7 +616,6 @@ async function startFullScreenTranslation() {
       error: null,
     });
 
-    if (resultWindowWasVisible) resultWindow.showInactive();
     if (result.sourceText) {
       const sizedBlocks = computeBlockBackgrounds(
         screenshot.toBitmap(),
@@ -638,16 +623,13 @@ async function startFullScreenTranslation() {
         screenshot.getSize().height,
         result.translatedBlocks,
       );
-      const visibleBlocks = sizedBlocks.filter((block) => blockInForeground(
-        block, displayBounds, display.scaleFactor, foregroundRect,
-      ));
-      showTranslationOverlay(displayBounds, {
+      showTranslationOverlay(captureBounds, {
         text: result.translatedText,
-        blocks: visibleBlocks.length > 0 ? visibleBlocks : sizedBlocks,
+        blocks: sizedBlocks,
         liveRunning: false,
       });
     } else {
-      showFullScreenStatus(displayBounds, '未识别到屏幕文字');
+      showFullScreenStatus(captureBounds, '未识别到前台窗口文字');
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -656,12 +638,9 @@ async function startFullScreenTranslation() {
       message: '全屏翻译失败',
       error: message,
     });
-    if (displayBounds) showFullScreenStatus(displayBounds, '全屏翻译失败：' + message);
+    if (captureBounds) showFullScreenStatus(captureBounds, '全屏翻译失败：' + message);
     else showFatalError(error);
   } finally {
-    if (resultWindowWasVisible && resultWindow && !resultWindow.isDestroyed() && !resultWindow.isVisible()) {
-      resultWindow.showInactive();
-    }
     fullScreenTranslationStarting = false;
   }
 }
@@ -970,13 +949,13 @@ function showTranslationOverlay(bounds = currentSession.selectionBounds, payload
 
 function applyLiveResult(result, frame) {
   currentSelectionSignature = frame.signature;
+  const previewImageDataUrl = frame.image.toDataURL();
   // 实时链路同样做无缝背景：用区域截图估计每个文本块的背景色。
   if (result.translatedBlocks?.length) {
     try {
-      const regionImage = nativeImage.createFromDataURL(frame.previewImageDataUrl);
-      const size = regionImage.getSize();
+      const size = frame.image.getSize();
       result.translatedBlocks = computeBlockBackgrounds(
-        regionImage.toBitmap(),
+        frame.image.toBitmap(),
         size.width,
         size.height,
         result.translatedBlocks,
@@ -988,7 +967,7 @@ function applyLiveResult(result, frame) {
     sendResultState({
       phase: 'empty',
       message: '实时更新：当前画面没有识别到文字。',
-      imageDataUrl: frame.previewImageDataUrl,
+      imageDataUrl: previewImageDataUrl,
       sourceText: '',
       translatedText: '',
       translatedBlocks: [],
@@ -1006,7 +985,7 @@ function applyLiveResult(result, frame) {
     sendResultState({
       phase: 'complete',
       message: '实时翻译已更新',
-      imageDataUrl: frame.previewImageDataUrl,
+      imageDataUrl: previewImageDataUrl,
       sourceText: result.sourceText,
       translatedText: result.translatedText,
       translatedBlocks: result.translatedBlocks,
@@ -1084,7 +1063,7 @@ function createLiveTranslationSession() {
   liveTranslationSession = new LiveTranslationSession({
     captureFrame: captureRegion,
     processFrame: async (frame) => recognizeAndTranslate(
-      frame.imageDataUrl,
+      prepareImageForOcr(frame.image),
       settingsStore.getRuntimeSettings(),
       {
         onProgress: (progress) => sendResultState({
@@ -1310,11 +1289,11 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('translation:retry', async (_event, sourceText) => retryTranslation(sourceText));
   ipcMain.handle('live:toggle', () => toggleLiveTranslation());
-  ipcMain.handle('input-panel:translate', async (_event, text) => {
+  ipcMain.handle('input-panel:translate', async (_event, text, language) => {
     const normalized = String(text ?? '').trim();
     if (!normalized) throw new Error('没有可翻译的内容。');
     const runtime = settingsStore.getRuntimeSettings();
-    const settings = { ...runtime, targetLanguage: runtime.inputPanelTargetLanguage || 'en' };
+    const settings = { ...runtime, targetLanguage: String(language || runtime.inputPanelTargetLanguage || 'en') };
     return translateText(normalized, settings);
   });
   ipcMain.on('input-panel:hide', () => {

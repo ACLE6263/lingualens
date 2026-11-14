@@ -44,12 +44,19 @@ test('部分保存保留窗口防截屏保护和重译快捷键', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingualens-test-'));
   const filePath = path.join(dir, 'settings.json');
   const store = new SettingsStore({ filePath, safeStorage: fakeSafeStorage });
-  store.save({ captureProtection: true, retranslateHotkey: 'Ctrl+Alt+V' });
+  store.save({
+    captureProtection: true,
+    retranslateHotkey: 'Ctrl+Alt+V',
+    google: { endpoint: 'https://example.test/translate' },
+    ollama: { baseUrl: 'http://localhost:12345', model: 'custom-model' },
+  });
   const reopened = new SettingsStore({ filePath, safeStorage: fakeSafeStorage });
   assert.equal(reopened.getRuntimeSettings().captureProtection, true);
   assert.equal(reopened.getRuntimeSettings().retranslateHotkey, 'Ctrl+Alt+V');
-  reopened.save({});
+  reopened.save({ inputPanelTargetLanguage: 'ja', ollama: { model: 'new-model' } });
   assert.equal(reopened.getRuntimeSettings().captureProtection, true);
   assert.equal(reopened.getRuntimeSettings().retranslateHotkey, 'Ctrl+Alt+V');
+  assert.equal(reopened.getRuntimeSettings().google.endpoint, 'https://example.test/translate');
+  assert.deepEqual(reopened.getRuntimeSettings().ollama, { baseUrl: 'http://localhost:12345', model: 'new-model' });
   fs.rmSync(dir, { recursive: true, force: true });
 });

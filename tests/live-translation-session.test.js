@@ -2,6 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { LiveTranslationSession } = require('../lib/live-translation-session');
+const { createFrameSignature } = require('../lib/frame-signature');
+
+function signature(...values) {
+  return createFrameSignature({
+    width: values.length,
+    height: 1,
+    data: Buffer.from(values.flatMap((value) => [value, value, value, 255])),
+  });
+}
 
 function createScheduler() {
   return {
@@ -20,9 +29,9 @@ function createScheduler() {
 
 test('live session skips unchanged frames and processes changed frames', async () => {
   const frames = [
-    { signature: Uint8Array.from([0, 0]), imageDataUrl: 'first' },
-    { signature: Uint8Array.from([0, 0]), imageDataUrl: 'same' },
-    { signature: Uint8Array.from([255, 0]), imageDataUrl: 'changed' },
+    { signature: signature(0, 0), imageDataUrl: 'first' },
+    { signature: signature(0, 0), imageDataUrl: 'same' },
+    { signature: signature(255, 0), imageDataUrl: 'changed' },
   ];
   const processed = [];
   const results = [];
@@ -64,14 +73,14 @@ test('stopped live session does not capture frames', async () => {
 test('live session can skip the unchanged initial frame', async () => {
   let processed = 0;
   const session = new LiveTranslationSession({
-    captureFrame: async () => ({ signature: Uint8Array.from([4, 8]), imageDataUrl: 'same' }),
+    captureFrame: async () => ({ signature: signature(4, 8), imageDataUrl: 'same' }),
     processFrame: async () => { processed += 1; },
     scheduler: createScheduler(),
   });
 
   session.start(
     { x: 0, y: 0, width: 100, height: 50 },
-    { initialSignature: Uint8Array.from([4, 8]) },
+    { initialSignature: signature(4, 8) },
   );
 
   assert.equal((await session.refreshOnce()).status, 'unchanged');
@@ -91,7 +100,7 @@ test('stopping a live session discards an in-flight result', async () => {
   session.start({ x: 0, y: 0, width: 100, height: 50 });
   const refresh = session.refreshOnce();
   session.stop();
-  finishCapture({ signature: Uint8Array.from([255]), imageDataUrl: 'late' });
+  finishCapture({ signature: signature(255), imageDataUrl: 'late' });
 
   assert.equal((await refresh).status, 'cancelled');
   assert.equal(processed, 0);
